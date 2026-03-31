@@ -1,0 +1,26 @@
+# Build directories
+build/
+cmake-build-*/
+
+# Generated ESP-IDF files
+sdkconfig
+sdkconfig.old
+sdkconfig.h
+sdkconfig.json
+
+# Compiled files
+*.d
+*.o
+*.a
+*.elf
+*.bin
+*.map
+*.s
+*.i
+
+# VS Code
+.vscode/
+.vscode/settings.json
+
+# OS files
+.DS_Store
