@@ -9,7 +9,7 @@
 static const char *TAG = "NVS_CFG";
 static const char *NAMESPACE = "netcfg";
 
-esp_err_t nvs_config_init(void). 
+esp_err_t nvs_config_init(void)
 {
     esp_err_t ret = nvs_flash_init(); // инициализация
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -19,7 +19,7 @@ esp_err_t nvs_config_init(void).
     return ret;
 }
 
-esp_err_t nvs_config_load_network(network_config_t *config). // заполняем 
+esp_err_t nvs_config_load_network(network_config_t *config) // заполняем структуру конфигом из NVS
 {
     if (!config) {
         return ESP_ERR_INVALID_ARG;
@@ -57,7 +57,7 @@ esp_err_t nvs_config_save_network(const network_config_t *config)
     if (!config) {
         return ESP_ERR_INVALID_ARG;
     }
-
+    esp_err_t ret = ESP_OK;
     nvs_handle_t handle;
     ESP_RETURN_ON_ERROR(nvs_open(NAMESPACE, NVS_READWRITE, &handle), TAG, "nvs_open failed");
     ESP_GOTO_ON_ERROR(nvs_set_u8(handle, "dhcp", config->dhcp_enabled ? 1 : 0), exit, TAG, "save dhcp failed");

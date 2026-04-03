@@ -101,15 +101,15 @@ esp_err_t ethernet_init(void) {
     // 2. Создаём конфигурацию для ESP32 EMAC
 
     eth_esp32_emac_config_t esp32_emac_config = ETH_ESP32_EMAC_DEFAULT_CONFIG();
-    esp32_emac_config.smi_mdc_gpio_num = GPIO_NUM_31;
+    /*esp32_emac_config.smi_mdc_gpio_num = GPIO_NUM_31;
     esp32_emac_config.smi_mdio_gpio_num = GPIO_NUM_52;
     esp32_emac_config.clock_config.rmii.clock_mode = EMAC_CLK_EXT_IN;
-    esp32_emac_config.clock_config.rmii.clock_gpio = GPIO_NUM_50;
+    esp32_emac_config.clock_config.rmii.clock_gpio = GPIO_NUM_50;*/
 
     // Конфигурация PHY (LAN8720 для примера)
     eth_phy_config_t phy_config = ETH_PHY_DEFAULT_CONFIG();
     phy_config.phy_addr = 1;                          // KEY FIX: address 1, not 0
-    phy_config.reset_gpio_num = GPIO_NUM_51;          // Power control
+    //phy_config.reset_gpio_num = GPIO_NUM_51;          // Power control
     phy_config.autonego_timeout_ms = 1000;            // Allow time for negotiation
     // Конфигурация MAC для ESP32-P4 RMII
     eth_mac_config_t mac_config = ETH_MAC_DEFAULT_CONFIG();

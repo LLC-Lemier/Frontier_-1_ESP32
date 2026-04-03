@@ -92,7 +92,7 @@ esp_err_t network_config_apply(const network_config_t *config)
     return ESP_OK;
 }
 
-esp_err_t network_config_apply_saved(void). //конфиг из NVS
+esp_err_t network_config_apply_saved(void) //конфиг из NVS
 {
     return network_config_apply(&s_saved_config);
 }

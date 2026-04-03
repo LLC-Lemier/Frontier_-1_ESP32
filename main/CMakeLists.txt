@@ -11,6 +11,8 @@ idf_component_register(
     REQUIRES
         esp_http_server
         esp_https_server
+        esp_timer
+        esp_driver_gpio
         esp_netif
         esp_eth
         nvs_flash

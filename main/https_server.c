@@ -90,7 +90,7 @@ static bool parse_ipv4_string(cJSON *root, const char *field, uint32_t *out_addr
         return !required;
     }
 
-    esp_ip4_addr_t addr;
+    ip4_addr_t addr;
     if (!ip4addr_aton(item->valuestring, &addr)) {
         return false;
     }
