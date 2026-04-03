@@ -103,7 +103,7 @@ esp_err_t network_config_get_runtime(network_config_t *config)
         return ESP_ERR_INVALID_ARG;
     }
 
-    memset(config, 0, sizeof(*config));
+    memset(config, 0, sizeof(*config));  // чистка памяти под структуру
     esp_netif_t *netif = ethernet_get_netif();
     if (!netif) {
         return ESP_ERR_INVALID_STATE;

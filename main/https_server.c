@@ -36,7 +36,7 @@ static const char *guess_content_type(const char *path)
     return "application/octet-stream";
 }
 
-static esp_err_t mount_spiffs(void)
+static esp_err_t mount_spiffs(void) // раздел фронта
 {
     esp_vfs_spiffs_conf_t conf = {
         .base_path = "/spiffs",
@@ -101,7 +101,7 @@ static bool parse_ipv4_string(cJSON *root, const char *field, uint32_t *out_addr
 static esp_err_t do_api_call(httpd_req_t *req, web_api_request_t *request)
 {
     web_api_response_t response = {0};
-    esp_err_t ret = web_api_call(request, &response, 5000);
+    esp_err_t ret = web_api_call(request, &response, 5000); // строка ответа
     if (ret != ESP_OK && response.http_status == 0) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "API call failed");
         return ret;
@@ -185,7 +185,7 @@ static esp_err_t reboot_post_handler(httpd_req_t *req)
     return do_api_call(req, &request);
 }
 
-static void register_uri_handlers(httpd_handle_t server)
+static void register_uri_handlers(httpd_handle_t server) // handler
 {
     const httpd_uri_t index_uri = {
         .uri = "/",

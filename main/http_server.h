@@ -6,10 +6,10 @@
 
 static const char *HTTP_TAG = "HTTP_TASK";
 
-/* Глобальный хендл сервера (чтобы можно было остановить извне) */
-static httpd_handle_t server_handle = NULL;
 
-/* Обработчик GET "/" */
+static httpd_handle_t server_handle = NULL; // глобальный обработчик
+
+/ Обработчик GET
 static esp_err_t root_handler(httpd_req_t *req)
 {
     const char* resp = "<html><body><h1>Сервер работает в отдельной таске!</h1></body></html>";
@@ -27,7 +27,7 @@ static esp_err_t status_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* Функция регистрации обработчиков URI */
+
 static void register_uri_handlers(httpd_handle_t server)
 {
     httpd_uri_t root = {
@@ -47,7 +47,6 @@ static void register_uri_handlers(httpd_handle_t server)
     httpd_register_uri_handler(server, &status);
 }
 
-/* САМА ЗАДАЧА HTTP СЕРВЕРА */
 void http_server_task(void *pvParameters)
 {
     ESP_LOGI(HTTP_TAG, "HTTP серверная задача запущена на ядре %d", xPortGetCoreID());
