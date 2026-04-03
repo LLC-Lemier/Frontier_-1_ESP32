@@ -1,0 +1,9 @@
+build/
+sdkconfig
+sdkconfig.old
+*.bin
+*.elf
+*.o
+.DS_Store
+.vscode/
+spiffs_image/
