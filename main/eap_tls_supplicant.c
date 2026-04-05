@@ -336,7 +336,7 @@ static esp_err_t handle_eap_identity(const uint8_t *data, size_t len) {
     );
     
     ESP_LOGI(TAG, "Responding with Identity: %s", s_config.identity);
-    ESP_LOG_BUFFER_HEX(TAG, s_eap_out, s_eap_out_len);
+    //ESP_LOG_BUFFER_HEX(TAG, s_eap_out, s_eap_out_len);
     s_state = EAP_TLS_IDENTITY_SENT;
     return ESP_OK;
 }
@@ -435,7 +435,7 @@ static esp_err_t handle_eap_tls(const uint8_t *data, size_t len) {
                 return ESP_OK;
             }
             ESP_LOGI(TAG, "Received complete TLS message, processing...");       
-            ESP_LOG_BUFFER_HEX(TAG, s_tls_in, s_tls_in_len); 
+            //ESP_LOG_BUFFER_HEX(TAG, s_tls_in, s_tls_in_len); 
             ESP_LOGW(TAG, "call handshake");
             ret = 0;
             while (ret == 0) {
@@ -566,7 +566,7 @@ void send_raw_ethernet_frame(
     size_t frame_len = 14 + payload_len;
     
     ESP_LOGI(TAG, "Prepared Ethernet frame: %zu bytes", frame_len);
-    ESP_LOG_BUFFER_HEX(TAG, frame, frame_len);
+    //ESP_LOG_BUFFER_HEX(TAG, frame, frame_len);
     // Отправка через Ethernet драйвер
     esp_err_t err = esp_eth_transmit(eth_handle, frame, frame_len);
     if (err == ESP_OK) {

@@ -26,14 +26,14 @@ esp_err_t esp_netif_receive_eapol(esp_eth_handle_t hdl, uint8_t *buffer, uint32_
             // Обрабатываем EAPoL
             //eapol_input_callback(buffer, length);
             ESP_LOGI(TAG, "Received EAPoL frame, length: %u", length);
-            ESP_LOG_BUFFER_HEX(TAG, buffer, length);
+            //ESP_LOG_BUFFER_HEX(TAG, buffer, length);
             eap_frame_handler(buffer, length, priv);
             free(buffer);
             return ESP_OK;  // Кадр обработан, не передаем дальше
         }
     }
     ESP_LOGI(TAG, "Received frame, length: %u", length);
-    ESP_LOG_BUFFER_HEX(TAG, buffer, length);
+    //ESP_LOG_BUFFER_HEX(TAG, buffer, length);
             
     // Передаем в TCP/IP стек через esp_netif_receive
     return esp_netif_receive(s_eth_netif, buffer, length, NULL);

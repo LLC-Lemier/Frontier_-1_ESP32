@@ -63,9 +63,12 @@ esp_err_t network_config_apply(const network_config_t *config)
     if (config->dhcp_enabled) {
         ret = esp_netif_dhcpc_start(netif);
         if (ret == ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED) {
-            ret = ESP_OK;
+            ESP_LOGI(TAG, "DHCP клиент уже запущен");
+        } else if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "DHCP клиент успешно запущен");
+        } else {
+            ESP_LOGE(TAG, "Ошибка запуска DHCP клиента: %s", esp_err_to_name(ret));
         }
-        ESP_RETURN_ON_ERROR(ret, TAG, "failed to start DHCP");
         ESP_LOGI(TAG, "Applied DHCP mode");
         return ESP_OK;
     }

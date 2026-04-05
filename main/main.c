@@ -50,6 +50,12 @@ void app_main(void)
                 xTaskCreate(tcp_server_task, "tcp_server", 4096, NULL, 5, NULL);
                 ESP_ERROR_CHECK(start_https_server_task()); //
                 services_started = true;
+                esp_netif_t *netif = ethernet_get_netif();    
+                esp_netif_ip_info_t ip_info;
+                if (esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
+                    ESP_LOGI(TAG, "IP: " IPSTR, IP2STR(&ip_info.ip));
+                    ESP_LOGI(TAG, "GW: " IPSTR, IP2STR(&ip_info.gw));
+                }           
             }
         } else {
             ESP_LOGW(TAG, "Waiting for authentication...");
