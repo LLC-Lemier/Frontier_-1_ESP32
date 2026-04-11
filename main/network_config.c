@@ -11,6 +11,7 @@
 
 static const char *TAG = "NET_CFG";
 static network_config_t s_saved_config;
+static eap_tls_config_t s_saved_eap_tls_config;
 
 static esp_err_t set_dns_if_present(esp_netif_t *netif, esp_netif_dns_type_t type, uint32_t dns_addr)
 {
@@ -27,7 +28,7 @@ static esp_err_t set_dns_if_present(esp_netif_t *netif, esp_netif_dns_type_t typ
 esp_err_t network_config_init(void)
 {
     ESP_RETURN_ON_ERROR(nvs_config_init(), TAG, "nvs init failed");
-    return nvs_config_load_network(&s_saved_config);
+    return nvs_config_load_network(&s_saved_config, &s_saved_eap_tls_config);
 }
 
 esp_err_t network_config_load(network_config_t *config)
@@ -45,7 +46,7 @@ esp_err_t network_config_save(const network_config_t *config)
         return ESP_ERR_INVALID_ARG;
     }
     s_saved_config = *config;
-    return nvs_config_save_network(config);
+    return nvs_config_save_network(config, config->eap_tls_config);
 }
 
 esp_err_t network_config_apply(const network_config_t *config)
@@ -133,4 +134,9 @@ esp_err_t network_config_get_runtime(network_config_t *config)
     }
 
     return ESP_OK;
+}
+
+network_config_t* network_config_get_saved(void)
+{
+    return &s_saved_config;
 }

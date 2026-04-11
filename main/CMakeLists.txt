@@ -20,12 +20,12 @@ idf_component_register(
         json
 )
 
-set(CERT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/certs)
+#set(CERT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/certs)
 
-target_add_binary_data(${COMPONENT_TARGET} "${CERT_DIR}/ca.pem" TEXT)
-target_add_binary_data(${COMPONENT_TARGET} "${CERT_DIR}/client.crt" TEXT)
-target_add_binary_data(${COMPONENT_TARGET} "${CERT_DIR}/client.key" TEXT)
-target_add_binary_data(${COMPONENT_TARGET} "${CERT_DIR}/server.crt" TEXT)
-target_add_binary_data(${COMPONENT_TARGET} "${CERT_DIR}/server.key" TEXT)
+#target_add_binary_data(${COMPONENT_TARGET} "${CERT_DIR}/ca.pem" TEXT)
+#target_add_binary_data(${COMPONENT_TARGET} "${CERT_DIR}/client.crt" TEXT)
+#target_add_binary_data(${COMPONENT_TARGET} "${CERT_DIR}/client.key" TEXT)
+#target_add_binary_data(${COMPONENT_TARGET} "${CERT_DIR}/server.crt" TEXT)
+#target_add_binary_data(${COMPONENT_TARGET} "${CERT_DIR}/server.key" TEXT)
 
 spiffs_create_partition_image(storage ../spiffs_image FLASH_IN_PROJECT)

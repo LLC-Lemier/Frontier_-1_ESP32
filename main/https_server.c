@@ -7,6 +7,7 @@
 #include <sys/stat.h>
 #include "cJSON.h"
 #include "esp_err.h"
+#include "esp_http_server.h"
 #include "esp_https_server.h"
 #include "esp_log.h"
 #include "esp_spiffs.h"
@@ -14,13 +15,21 @@
 #include "web_api.h"
 #include "lwip/ip4_addr.h"
 
+#include "authentification.h"
+
 static const char *TAG = "HTTPS";
 static httpd_handle_t s_server;
+static httpd_handle_t s_ssl_server;
+static bool is_spiffs_mounted = false; 
 
-extern const char server_cert_pem_start[] asm("_binary_server_crt_start");  // эмуляция файлов
-extern const char server_cert_pem_end[]   asm("_binary_server_crt_end");
-extern const char server_key_pem_start[]  asm("_binary_server_key_start");
-extern const char server_key_pem_end[]    asm("_binary_server_key_end");
+static char* server_cert_pem = NULL; 
+static char* server_key_pem = NULL;
+static int server_cert_len = 0;
+static int server_key_len = 0;
+//extern const char server_cert_pem_start[] asm("_binary_server_crt_start");  // эмуляция файлов
+//extern const char server_cert_pem_end[]   asm("_binary_server_crt_end");
+//extern const char server_key_pem_start[]  asm("_binary_server_key_start");
+//extern const char server_key_pem_end[]    asm("_binary_server_key_end");
 
 static const char *guess_content_type(const char *path)
 {
@@ -38,10 +47,13 @@ static const char *guess_content_type(const char *path)
 
 static esp_err_t mount_spiffs(void) // раздел фронта
 {
+    if (is_spiffs_mounted) {
+        return ESP_OK; // уже смонтирован
+    }
     esp_vfs_spiffs_conf_t conf = {
         .base_path = "/spiffs",
         .partition_label = "storage",
-        .max_files = 8,
+        .max_files = 16,
         .format_if_mount_failed = false,
     };
     return esp_vfs_spiffs_register(&conf);
@@ -72,7 +84,7 @@ static esp_err_t send_file(httpd_req_t *req, const char *path)
 
 static esp_err_t static_get_handler(httpd_req_t *req)
 {
-    char path[256] = "/spiffs";
+    char path[256] = "/spiffs/web";
     const char *uri = req->uri;
 
     if (strcmp(uri, "/") == 0) {
@@ -185,6 +197,47 @@ static esp_err_t reboot_post_handler(httpd_req_t *req)
     return do_api_call(req, &request);
 }
 
+// Обработчик логина
+esp_err_t login_handler(http_req_t *req) {
+    // Парсим JSON из тела запроса
+    cJSON *root = cJSON_Parse(req->body);
+    const char *username = cJSON_GetObjectItem(root, "username")->valuestring;
+    const char *password = cJSON_GetObjectItem(root, "password")->valuestring;
+    
+    // Получаем IP клиента
+    const char *client_ip = http_req_get_ip(req);
+    const char *user_agent = http_req_get_header(req, "User-Agent");
+    
+    // Создаём сессию
+    session_t *session = create_session(username, password, client_ip, user_agent);
+    
+    if (session) {
+        // Отправляем session_id в cookie
+        http_resp_set_cookie(req, "SESSION_ID", session->session_id);
+        http_resp_send_json(req, 200, "{\"status\":\"ok\"}");
+        free(session);
+    } else {
+        http_resp_send_json(req, 401, "{\"error\":\"Invalid credentials\"}");
+    }
+    
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+// Middleware для проверки аутентификации
+bool auth_middleware(http_req_t *req) {
+    // Получаем session_id из cookie
+    const char *session_id = http_req_get_cookie(req, "SESSION_ID");
+    const char *client_ip = http_req_get_ip(req);
+    
+    if (!session_id) {
+        return false;
+    }
+    
+    return validate_session(session_id, client_ip);
+}
+
+
 static void register_uri_handlers(httpd_handle_t server) // handler
 {
     const httpd_uri_t index_uri = {
@@ -227,6 +280,11 @@ static void register_uri_handlers(httpd_handle_t server) // handler
         .method = HTTP_POST,
         .handler = reboot_post_handler,
     };
+    const httpd_uri_t auth_uri = {
+        .uri = "/api/auth",
+        .method = HTTP_POST,
+        .handler = login_handler, // TODO: implement auth handler
+    };
 
     httpd_register_uri_handler(server, &status_uri);
     httpd_register_uri_handler(server, &net_cfg_uri);
@@ -236,12 +294,113 @@ static void register_uri_handlers(httpd_handle_t server) // handler
     httpd_register_uri_handler(server, &assets_uri);
     httpd_register_uri_handler(server, &index_uri);
     httpd_register_uri_handler(server, &wildcard_static_uri);
+    httpd_register_uri_handler(server, &auth_uri);
+}
+
+static void http_server_start()
+{
+/*    if (mount_spiffs() != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to mount SPIFFS partition 'storage'");
+        vTaskDelete(NULL);
+        return;
+    }
+*/
+    httpd_config_t conf = HTTPD_DEFAULT_CONFIG();
+    conf.stack_size = 12288;
+    conf.max_uri_handlers = 16;
+    conf.max_open_sockets = 4;
+    conf.uri_match_fn = httpd_uri_match_wildcard;
+    
+    esp_err_t ret = httpd_start(&s_server, &conf);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "httpd_start failed: %s", esp_err_to_name(ret));
+        //vTaskDelete(NULL);
+        return;
+    }
+
+    register_uri_handlers(s_server);
+    ESP_LOGI(TAG, "HTTP server started on port 80");
+
+    /*while (1) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }*/
+}
+
+static esp_err_t read_cert_and_key(const char *cert_path, const char *key_path)
+{
+    FILE *f = fopen(cert_path, "rb");
+    if (!f) {
+        ESP_LOGW(TAG, "File not found: %s", cert_path);
+        return ESP_FAIL;
+    }
+
+    fseek(f, 0, SEEK_END);
+    server_cert_len = ftell(f);   
+    fseek(f, 0, SEEK_SET); 
+
+    ESP_LOGI(TAG, "Server certificate size: %d bytes", server_cert_len);
+    server_cert_pem = malloc(server_cert_len + 1);  // +1 for null terminator
+    if (!server_cert_pem) {
+        ESP_LOGE(TAG, "Failed to allocate memory for server certificate");
+        fclose(f);
+        return ESP_FAIL;
+    }
+
+    if (fread(server_cert_pem, 1, server_cert_len, f) != server_cert_len) {
+        ESP_LOGE(TAG, "Failed to read server certificate");
+        free(server_cert_pem);
+        fclose(f);
+        return ESP_FAIL;
+    }
+    // Null-terminate for mbedtls PEM parser
+    server_cert_pem[server_cert_len] = '\0';
+    server_cert_len++;  // Include null terminator in length
+    ESP_LOGI(TAG, "Server certificate read successfully");
+    ESP_LOGI(TAG, "Certificate content:\n%.*s", server_cert_len, server_cert_pem);
+    fclose(f);
+
+    f = fopen(key_path, "rb");
+    if (!f) {
+        ESP_LOGW(TAG, "File not found: %s", key_path);
+        free(server_cert_pem);
+        return ESP_FAIL;
+    }
+    fseek(f, 0, SEEK_END);
+    server_key_len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    server_key_pem = malloc(server_key_len + 1);  // +1 for null terminator
+    if (!server_key_pem) {
+        ESP_LOGE(TAG, "Failed to allocate memory for server key");
+        free(server_cert_pem);
+        fclose(f);
+        return ESP_FAIL;
+    }
+    if (fread(server_key_pem, 1, server_key_len, f) != server_key_len) {
+        ESP_LOGE(TAG, "Failed to read server key");
+        free(server_cert_pem);
+        free(server_key_pem);
+        fclose(f);
+        return ESP_FAIL;
+    }
+    // Null-terminate for mbedtls PEM parser
+    server_key_pem[server_key_len] = '\0';
+    server_key_len++;  // Include null terminator in length
+    ESP_LOGI(TAG, "Server key read successfully");
+    ESP_LOGI(TAG, "Key content:\n%.*s", server_key_len, server_key_pem);
+    fclose(f);
+    return ESP_OK;
 }
 
 static void https_server_task(void *arg)
 {
     if (mount_spiffs() != ESP_OK) {
         ESP_LOGE(TAG, "Failed to mount SPIFFS partition 'storage'");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    if (read_cert_and_key("/spiffs/certs/server.crt", "/spiffs/certs/server.key") != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to read server certificate and key");
         vTaskDelete(NULL);
         return;
     }
@@ -253,25 +412,29 @@ static void https_server_task(void *arg)
     conf.httpd.stack_size = 12288;
     conf.httpd.max_uri_handlers = 16;
     conf.httpd.max_open_sockets = 4;
-    conf.servercert = (const uint8_t *)server_cert_pem_start;
-    conf.servercert_len = server_cert_pem_end - server_cert_pem_start;
-    conf.prvtkey_pem = (const uint8_t *)server_key_pem_start;
-    conf.prvtkey_len = server_key_pem_end - server_key_pem_start;
 
-    esp_err_t ret = httpd_ssl_start(&s_server, &conf);
+ 
+    conf.servercert = (const uint8_t *)server_cert_pem;
+    conf.servercert_len = server_cert_len;
+    conf.prvtkey_pem = (const uint8_t *)server_key_pem;
+    conf.prvtkey_len = server_key_len;
+
+    esp_err_t ret = httpd_ssl_start(&s_ssl_server, &conf);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "httpd_ssl_start failed: %s", esp_err_to_name(ret));
         vTaskDelete(NULL);
         return;
     }
 
-    register_uri_handlers(s_server);
+    register_uri_handlers(s_ssl_server);
     ESP_LOGI(TAG, "HTTPS server started on port 443");
 
+    http_server_start();
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
+
 
 esp_err_t start_https_server_task(void)
 {
@@ -284,8 +447,13 @@ esp_err_t start_https_server_task(void)
 
 void stop_https_server(void)
 {
+    if (s_ssl_server) {
+        httpd_ssl_stop(s_ssl_server);
+        s_ssl_server = NULL;
+    }
+
     if (s_server) {
-        httpd_ssl_stop(s_server);
+        httpd_stop(s_server);
         s_server = NULL;
     }
 }

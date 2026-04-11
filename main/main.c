@@ -22,7 +22,46 @@ void app_main(void)
 {
     ESP_LOGI(TAG, "ESP32-P4 EAP-TLS Supplicant starting");
 
+
+    ESP_ERROR_CHECK(ethernet_init());
     ESP_ERROR_CHECK(network_config_init());
+    ESP_ERROR_CHECK(network_config_apply_saved());
+    
+    network_config_t *saved_config = network_config_get_saved();
+    
+    if (saved_config->eap_tls_config) {
+        ESP_LOGI(TAG, "EAP-TLS config found in NVS, initializing supplicant with it");
+        ESP_ERROR_CHECK(eap_tls_supplicant_init(saved_config->eap_tls_config));
+        ESP_ERROR_CHECK(eap_tls_supplicant_start());
+
+        while (!eap_tls_supplicant_is_authenticated())
+        {
+            ESP_LOGW(TAG, "Waiting for authentication...");
+            vTaskDelay(pdMS_TO_TICKS(5000));
+        }
+
+        ESP_LOGI(TAG, "Authentication successful! Network access granted");
+    } else {
+        ESP_LOGI(TAG, "No EAP-TLS config in NVS, initializing supplicant with defaults");
+        ESP_LOGI(TAG, "Not starting EAP-TLS supplicant since no config is present");        
+    }
+
+    if (saved_config->dhcp_enabled) {
+        ESP_LOGI(TAG, "DHCP is enabled in saved config");
+    } else {
+        ESP_LOGI(TAG, "DHCP is disabled in saved config, applying static IP settings");
+    }
+
+    ESP_ERROR_CHECK(web_api_start()); // url handler
+    xTaskCreate(tcp_server_task, "tcp_server", 4096, NULL, 5, NULL);
+    ESP_ERROR_CHECK(start_https_server_task()); //
+    while (1)
+    {
+        vTaskDelay(pdMS_TO_TICKS(10000));
+    }
+    
+
+    /*ESP_ERROR_CHECK(network_config_init());
     ESP_ERROR_CHECK(ethernet_init());
 
     eap_tls_config_t config = {
@@ -61,5 +100,5 @@ void app_main(void)
             ESP_LOGW(TAG, "Waiting for authentication...");
         }
         vTaskDelay(pdMS_TO_TICKS(5000));
-    }
+    }*/
 }

@@ -6,4 +6,5 @@ sdkconfig.old
 *.o
 .DS_Store
 .vscode/
+
 spiffs_image/
