@@ -1,8 +1,11 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
-#include "esp_vfs_fat.h"
-#include "sdmmc_cmd.h"
+#include <lwip/sockets.h>
+#include "esp_timer.h"
+#include "esp_random.h"
+//#include "esp_vfs_fat.h"
+//#include "sdmmc_cmd.h"
 
 // Максимальное количество одновременных сессий
 #define MAX_SESSIONS 32
@@ -16,7 +19,7 @@ typedef struct {
     char user_id[64];
     time_t created_at;
     time_t expires_at;
-    char ip_address[16];
+    char ip_address[INET6_ADDRSTRLEN];
     char user_agent[128];
     bool is_active;
 } session_t;
@@ -34,3 +37,9 @@ session_t* create_session(
     const char *ip, 
     const char *user_agent
 ); 
+
+session_t* validate_session(const char *session_id, const char *ip_address);
+void cleanup_expired_sessions(void);
+void start_session_cleanup_timer(void);
+void cleanup_expired_sessions_timer_cb(void *arg);
+void create_default_user(void);

@@ -1,5 +1,6 @@
 idf_component_register(
     SRCS
+        "authentication.c"
         "ethernet_init.c"
         "main.c"
         "eap_tls_supplicant.c"

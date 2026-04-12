@@ -14,8 +14,8 @@
 #include "esp_timer.h"
 #include "web_api.h"
 #include "lwip/ip4_addr.h"
-
-#include "authentification.h"
+#include <lwip/sockets.h>
+#include "authentication.h"
 
 static const char *TAG = "HTTPS";
 static httpd_handle_t s_server;
@@ -197,44 +197,140 @@ static esp_err_t reboot_post_handler(httpd_req_t *req)
     return do_api_call(req, &request);
 }
 
+
+static esp_err_t get_client_ip(httpd_req_t *req, char *ip_buffer, size_t buffer_len) {
+    int sockfd = httpd_req_to_sockfd(req);
+    if (sockfd < 0) {
+        return ESP_FAIL;
+    }
+    
+    struct sockaddr_storage client_addr;
+    socklen_t addr_len = sizeof(client_addr);
+    memset(&client_addr, 0, sizeof(client_addr));
+    
+    if (getpeername(sockfd, (struct sockaddr *)&client_addr, &addr_len) != 0) {
+        ESP_LOGE("HTTP", "getpeername failed: errno %d", errno);
+        return ESP_FAIL;
+    }
+    
+    // Конвертируем IP в строку
+    if (client_addr.ss_family == AF_INET) {
+        struct sockaddr_in *s = (struct sockaddr_in *)&client_addr;
+        inet_ntop(AF_INET, &s->sin_addr, ip_buffer, buffer_len);
+    } else if (client_addr.ss_family == AF_INET6) {
+        struct sockaddr_in6 *s = (struct sockaddr_in6 *)&client_addr;
+        inet_ntop(AF_INET6, &s->sin6_addr, ip_buffer, buffer_len);
+    } else {
+        return ESP_FAIL;
+    }
+    
+    return ESP_OK;
+}
+
 // Обработчик логина
-esp_err_t login_handler(http_req_t *req) {
+esp_err_t login_handler(httpd_req_t *req) {
+    
+    char client_ip[INET6_ADDRSTRLEN];
+    
+    if (get_client_ip(req, client_ip, sizeof(client_ip)) == ESP_OK) {
+        ESP_LOGI("LOGIN", "Login attempt from IP: %s", client_ip);
+    } else {
+        ESP_LOGE("LOGIN", "Failed to get client IP");
+        strcpy(client_ip, "unknown");
+    }
+    
     // Парсим JSON из тела запроса
-    cJSON *root = cJSON_Parse(req->body);
+    char body[1024];
+    int ret, remaining = req->content_len;
+
+    while (remaining > 0) {
+        /* Read the data for the request */
+        ret = httpd_req_recv(req, body, MIN(remaining, sizeof(body)));
+        if (ret <= 0) {
+            if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+                /* Retry if timeout occurred */
+                continue;
+            }
+            return ESP_FAIL;
+        }
+        /* Process your data in 'buf' here */
+        remaining -= ret;
+    }
+
+    cJSON *root = cJSON_Parse(body);
     const char *username = cJSON_GetObjectItem(root, "username")->valuestring;
     const char *password = cJSON_GetObjectItem(root, "password")->valuestring;
-    
-    // Получаем IP клиента
-    const char *client_ip = http_req_get_ip(req);
-    const char *user_agent = http_req_get_header(req, "User-Agent");
-    
+    ESP_LOGI(TAG, "Login attempt: %s", username);
+
+
+    char user_agent[128];
+    httpd_req_get_hdr_value_str(req, "User-Agent", user_agent, sizeof(user_agent));
+
+    ESP_LOGI(TAG, "User-Agent: %s", user_agent);
     // Создаём сессию
     session_t *session = create_session(username, password, client_ip, user_agent);
     
     if (session) {
         // Отправляем session_id в cookie
-        http_resp_set_cookie(req, "SESSION_ID", session->session_id);
-        http_resp_send_json(req, 200, "{\"status\":\"ok\"}");
-        free(session);
+        char cookie_header[64];
+        snprintf(cookie_header, sizeof(cookie_header), "SESSION_ID=%s; HttpOnly", session->session_id);
+        httpd_resp_set_hdr(req, "Set-Cookie", cookie_header);
+        httpd_resp_set_status(req, "200 OK");
+        httpd_resp_set_type(req, "application/json");
+        char response[256];
+        snprintf(response, sizeof(response), "{\"authenticated\":true, \"user\":\"%s\"}", session->user_id);
+        httpd_resp_sendstr(req, response);
+        //free(session);
     } else {
-        http_resp_send_json(req, 401, "{\"error\":\"Invalid credentials\"}");
+        httpd_resp_set_status(req, "401 Unauthorized");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"error\":\"Invalid credentials\"}");
+        //httpd_resp_send_json(req, 401, ");
     }
-    
     cJSON_Delete(root);
     return ESP_OK;
 }
 
 // Middleware для проверки аутентификации
-bool auth_middleware(http_req_t *req) {
+session_t* auth_middleware(httpd_req_t *req) {
     // Получаем session_id из cookie
-    const char *session_id = http_req_get_cookie(req, "SESSION_ID");
-    const char *client_ip = http_req_get_ip(req);
-    
-    if (!session_id) {
-        return false;
+    char session_id[33];
+    size_t len = sizeof(session_id);
+    esp_err_t err = httpd_req_get_cookie_val(req, "SESSION_ID", session_id, &len);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "SESSION_ID cookie read failed: %s (%d), required_len=%u", esp_err_to_name(err), err, (unsigned)len);
+        return NULL;
     }
+    session_id[sizeof(session_id) - 1] = '\0'; // гарантируем null-терминатор
+    ESP_LOGI(TAG, "Auth middleware, session_id: %s", session_id);
     
+    char client_ip[INET6_ADDRSTRLEN];
+    
+    if (get_client_ip(req, client_ip, sizeof(client_ip)) == ESP_OK) {
+        ESP_LOGI("LOGIN", "Login attempt from IP: %s", client_ip);
+    } else {
+        ESP_LOGE("LOGIN", "Failed to get client IP");
+        strcpy(client_ip, "unknown");
+    }
+       
     return validate_session(session_id, client_ip);
+}
+
+esp_err_t auth_check_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "Auth check for URI: %s", req->uri);
+    session_t *session = auth_middleware(req);
+    if (session) {
+        httpd_resp_set_status(req, "200 OK");
+        httpd_resp_set_type(req, "application/json");
+        char response[256];
+        snprintf(response, sizeof(response), "{\"authenticated\":true, \"user\":\"%s\"}", session->user_id);
+        httpd_resp_sendstr(req, response);
+    } else {
+        httpd_resp_set_status(req, "401 Unauthorized");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"authenticated\":false}");
+    }
+    return ESP_OK;
 }
 
 
@@ -281,9 +377,14 @@ static void register_uri_handlers(httpd_handle_t server) // handler
         .handler = reboot_post_handler,
     };
     const httpd_uri_t auth_uri = {
-        .uri = "/api/auth",
+        .uri = "/api/auth/login",
         .method = HTTP_POST,
         .handler = login_handler, // TODO: implement auth handler
+    };
+    const httpd_uri_t auth_check_uri = {
+        .uri = "/api/auth/check",
+        .method = HTTP_GET,
+        .handler = auth_check_handler, // TODO: implement auth check handler
     };
 
     httpd_register_uri_handler(server, &status_uri);
@@ -293,8 +394,10 @@ static void register_uri_handlers(httpd_handle_t server) // handler
     httpd_register_uri_handler(server, &reboot_uri);
     httpd_register_uri_handler(server, &assets_uri);
     httpd_register_uri_handler(server, &index_uri);
-    httpd_register_uri_handler(server, &wildcard_static_uri);
     httpd_register_uri_handler(server, &auth_uri);
+    httpd_register_uri_handler(server, &auth_check_uri);
+    httpd_register_uri_handler(server, &wildcard_static_uri);
+    
 }
 
 static void http_server_start()

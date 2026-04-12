@@ -1,5 +1,8 @@
+#include "authentication.h"
+
 #include "esp_log.h"
 #include "esp_err.h"
+
 
 #include <mbedtls/sha512.h>
 
@@ -52,11 +55,11 @@ esp_err_t init_session_storage(void) {
 }
 
 
-void sha512_string(const char *data, char *hash_result) {
+void sha512_string(const char *data,char *hash_result) {
     mbedtls_sha512_context ctx;
     mbedtls_sha512_init(&ctx);
-    mbedtls_sha512_update(&ctx, (const unsigned char *)data, sizeof(data));
-    mbedtls_sha512_finish(&ctx, hash_result);
+    mbedtls_sha512_update(&ctx, (const unsigned char *)data, strlen(data));
+    mbedtls_sha512_finish(&ctx, (unsigned char *)hash_result);
     mbedtls_sha512_free(&ctx);
 }
 
@@ -122,7 +125,7 @@ esp_err_t authenticate_user(const char *username, const char *password, user_t *
     char password_hash[65];
     sha512_string(password, password_hash);
     
-    if (strcmp(password_hash, user->password_hash) == 0) {
+    if (strcmp((const char *)password_hash, (const char *)user->password_hash) == 0) {
         return ESP_OK;
     }
     
@@ -131,7 +134,7 @@ esp_err_t authenticate_user(const char *username, const char *password, user_t *
 
 // Сохранение сессии в файл
 esp_err_t save_session(session_t *session) {
-
+    ESP_LOGI(TAG, "Saving session: %s for user: %s", session->session_id, session->user_id);
     if (!session) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -145,11 +148,10 @@ esp_err_t save_session(session_t *session) {
 
     if (s_sessions_len < MAX_SESSIONS) {
         s_sessions[s_sessions_len++] = *session;
-    } else {
-        ESP_LOGE(TAG, "Session storage full");
-        return ESP_FAIL;
-    }
-
+        return ESP_OK;
+    } 
+    ESP_LOGE(TAG, "Session storage full");
+    return ESP_FAIL;
     /*char filepath[128];
     snprintf(filepath, sizeof(filepath), "%s/sess_%s.json", 
              SESSION_DIR, session->session_id);
@@ -204,8 +206,11 @@ esp_err_t load_session(const char *session_id, session_t *session) {
     
     fclose(f);*/
 
+    ESP_LOGI(TAG, "Loading session: %s", session_id);
     for (uint32_t i = 0; i < s_sessions_len; i++) {
+        ESP_LOGI(TAG, "Checking session: %s", s_sessions[i].session_id);
         if (strcmp(s_sessions[i].session_id, session_id) == 0) {
+            ESP_LOGI(TAG, "Session found: %s", session_id);
             *session = s_sessions[i];
             return ESP_OK;
         }
@@ -227,6 +232,7 @@ esp_err_t delete_session(const char *session_id) {
             return ESP_OK;
         }
     }
+    return ESP_FAIL;
     /*char filepath[128];
     snprintf(filepath, sizeof(filepath), "%s/sess_%s.json", 
              SESSION_DIR, session_id);
@@ -240,6 +246,18 @@ esp_err_t delete_session(const char *session_id) {
 }
 
 
+void cleanup_user_sessions(const char *username) {
+    for (uint32_t i = 0; i < s_sessions_len; ) {
+        if (strcmp(s_sessions[i].user_id, username) == 0) {
+            for (uint32_t j = i; j < s_sessions_len - 1; j++) {
+                s_sessions[j] = s_sessions[j + 1];
+            }
+            s_sessions_len--;
+        } else {
+            i++;
+        }
+    }
+}
 
 // Создание новой сессии при логине
 session_t* create_session(
@@ -248,6 +266,7 @@ session_t* create_session(
     const char *ip, 
     const char *user_agent
 ) {
+    ESP_LOGI(TAG, "Creating session for user: %s", username);
     // 1. Проверяем пользователя
     user_t user;
     if (!authenticate_user(username, password, &user)) {
@@ -264,52 +283,65 @@ session_t* create_session(
     strncpy(session->ip_address, ip, sizeof(session->ip_address) - 1);
     strncpy(session->user_agent, user_agent, sizeof(session->user_agent) - 1);
     session->is_active = true;
+    // 4. Очищаем старые сессии этого пользователя (опционально)
+    //
+    cleanup_user_sessions(username);
     
+
     // 3. Сохраняем на SD-карту
     if (save_session(session) != ESP_OK) {
-        free(session);
+        //free(session);
+        ESP_LOGE(TAG, "Failed to save session for user: %s", username);
         return NULL;
     }
     
-    // 4. Очищаем старые сессии этого пользователя (опционально)
-    cleanup_user_sessions(username);
     
     return session;
 }
 
 // Проверка валидности сессии
-bool validate_session(const char *session_id, const char *ip_address) {
+session_t* validate_session(const char *session_id, const char *ip_address) {
     session_t session;
     
     if (load_session(session_id, &session) != ESP_OK) {
-        return false;
+        ESP_LOGW(TAG, "Session not found: %s", session_id);
+        return NULL;
     }
     
     // Проверяем активность
     if (!session.is_active) {
-        return false;
+        ESP_LOGW(TAG, "Session inactive: %s", session_id);
+        return NULL;
     }
     
     // Проверяем время жизни
     time_t now = time(NULL);
     if (now > session.expires_at) {
         // Сессия истекла - удаляем
+        ESP_LOGW(TAG, "Session expired: %s", session_id);
         delete_session(session_id);
-        return false;
+        return NULL;
     }
     
     // Опционально: проверяем IP (для безопасности)
+
     if (strcmp(session.ip_address, ip_address) != 0) {
         ESP_LOGW(TAG, "IP mismatch for session %s", session_id);
+        ESP_LOGW(TAG, "Expected IP: %s, Actual IP: %s", session.ip_address, ip_address);
         // Можно запретить или разрешить - зависит от требований безопасности
-        return false;
+        return NULL;
     }
     
     // Продлеваем сессию (скользящий TTL)
     session.expires_at = now + SESSION_TTL;
     save_session(&session);
     
-    return true;
+    for (uint32_t i = 0; i < s_sessions_len; i++) {
+        if (strcmp(s_sessions[i].session_id, session_id) == 0) {
+            return &s_sessions[i];
+        }
+    }
+    return NULL;
 }
 
 
@@ -353,7 +385,7 @@ void cleanup_expired_sessions(void) {
     }
     
     closedir(dir);*/
-    ESP_LOGI(TAG, "Cleanup finished. Deleted %d expired sessions", deleted_count);
+//    ESP_LOGI(TAG, "Cleanup finished. Deleted %d expired sessions", deleted_count);
 }
 
 void start_session_cleanup_timer(void) {
@@ -362,10 +394,10 @@ void start_session_cleanup_timer(void) {
         .name = "session_cleanup"
     };
     
-    esp_timer_handle_t timer;
-    esp_timer_create(&timer_args, &timer);
+    //esp_timer_handle_t timer;
+    //esp_timer_create(&timer_args, &timer);
     // Запускаем каждые 15 минут
-    esp_timer_start_periodic(timer, 15 * 60 * 1000000);
+    //esp_timer_start_periodic(timer, 15 * 60 * 1000000);
 }
 
 void cleanup_expired_sessions_timer_cb(void *arg) {
