@@ -1,4 +1,4 @@
-#include <stdio.h>                                    
+#include <stdio.h>                                    //---------------
 #include "freertos/FreeRTOS.h"                        // Подключаем базовые типы и макросы FreeRTOS;  tick-макросы.
 #include "freertos/task.h"                            // API задач FreeRTOS; таски и dealys
 #include "esp_log.h"                                  
