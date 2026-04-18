@@ -16,6 +16,7 @@
 #include "lwip/ip4_addr.h"
 #include <lwip/sockets.h>
 #include "authentication.h"
+#include "network_config.h"
 
 static const char *TAG = "HTTPS";
 static httpd_handle_t s_server;
@@ -45,6 +46,25 @@ static const char *guess_content_type(const char *path)
     return "application/octet-stream";
 }
 
+// Добавьте эту функцию в ваш ESP32 код
+esp_err_t add_cors_headers(httpd_req_t *req) {
+    // Для разработки - разрешаем конкретный origin
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", 
+                       "https://localhost:5173/"); // Ваш фронтенд порт
+    
+    // Обязательно для credentials (cookies)
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Credentials", "true");
+    
+    // Разрешаем нужные методы
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Methods", 
+                       "GET, POST, PUT, DELETE, OPTIONS");
+    
+    // Разрешаем нужные заголовки
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", 
+                       "Content-Type, Authorization, X-Requested-With");
+    
+    return ESP_OK;
+}
 static esp_err_t mount_spiffs(void) // раздел фронта
 {
     if (is_spiffs_mounted) {
@@ -57,6 +77,61 @@ static esp_err_t mount_spiffs(void) // раздел фронта
         .format_if_mount_failed = false,
     };
     return esp_vfs_spiffs_register(&conf);
+}
+
+static esp_err_t get_client_ip(httpd_req_t *req, char *ip_buffer, size_t buffer_len) {
+    int sockfd = httpd_req_to_sockfd(req);
+    if (sockfd < 0) {
+        return ESP_FAIL;
+    }
+    
+    struct sockaddr_storage client_addr;
+    socklen_t addr_len = sizeof(client_addr);
+    memset(&client_addr, 0, sizeof(client_addr));
+    
+    if (getpeername(sockfd, (struct sockaddr *)&client_addr, &addr_len) != 0) {
+        ESP_LOGE("HTTP", "getpeername failed: errno %d", errno);
+        return ESP_FAIL;
+    }
+    
+    // Конвертируем IP в строку
+    if (client_addr.ss_family == AF_INET) {
+        struct sockaddr_in *s = (struct sockaddr_in *)&client_addr;
+        inet_ntop(AF_INET, &s->sin_addr, ip_buffer, buffer_len);
+    } else if (client_addr.ss_family == AF_INET6) {
+        struct sockaddr_in6 *s = (struct sockaddr_in6 *)&client_addr;
+        inet_ntop(AF_INET6, &s->sin6_addr, ip_buffer, buffer_len);
+    } else {
+        return ESP_FAIL;
+    }
+    
+    return ESP_OK;
+}
+
+
+// Middleware для проверки аутентификации
+session_t* auth_middleware(httpd_req_t *req) {
+    // Получаем session_id из cookie
+    char session_id[33];
+    size_t len = sizeof(session_id);
+    esp_err_t err = httpd_req_get_cookie_val(req, "SESSION_ID", session_id, &len);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "SESSION_ID cookie read failed: %s (%d), required_len=%u", esp_err_to_name(err), err, (unsigned)len);
+        return NULL;
+    }
+    session_id[sizeof(session_id) - 1] = '\0'; // гарантируем null-терминатор
+    ESP_LOGI(TAG, "Auth middleware, session_id: %s", session_id);
+    
+    char client_ip[INET6_ADDRSTRLEN];
+    
+    if (get_client_ip(req, client_ip, sizeof(client_ip)) == ESP_OK) {
+        ESP_LOGI("LOGIN", "Login attempt from IP: %s", client_ip);
+    } else {
+        ESP_LOGE("LOGIN", "Failed to get client IP");
+        strcpy(client_ip, "unknown");
+    }
+       
+    return validate_session(session_id, client_ip);
 }
 
 static esp_err_t send_file(httpd_req_t *req, const char *path)
@@ -136,59 +211,99 @@ static esp_err_t status_get_handler(httpd_req_t *req)
 
 static esp_err_t network_config_get_handler(httpd_req_t *req)
 {
-    web_api_request_t request = {.type = WEB_API_CMD_GET_NETWORK_CONFIG, .request_id = (uint32_t)esp_timer_get_time()};
-    return do_api_call(req, &request);
-}
-
-static esp_err_t network_dhcp_post_handler(httpd_req_t *req)
-{
-    web_api_request_t request = {
-        .type = WEB_API_CMD_SET_DHCP,
-        .request_id = (uint32_t)esp_timer_get_time(),
-        .network = {.dhcp_enabled = true},
-    };
-    return do_api_call(req, &request);
-}
-
-static esp_err_t network_static_post_handler(httpd_req_t *req)
-{
-    char buffer[512];
-    int total = req->content_len;
-    if (total <= 0 || total >= (int)sizeof(buffer)) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Body too large or empty");
-        return ESP_ERR_INVALID_SIZE;
+    add_cors_headers(req); // Добавляем CORS заголовки к ответу
+    session_t *session = auth_middleware(req);
+ 
+    if (session) {
+        web_api_request_t request = {
+            .type = WEB_API_CMD_GET_NETWORK_CONFIG, 
+            .request_id = (uint32_t)esp_timer_get_time()
+        };
+        esp_err_t result = do_api_call(req, &request);
+        
+        return result;
     }
+ 
+    httpd_resp_set_status(req, "401 Unauthorized");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"error\":\"Invalid credentials\"}");
+    //httpd_resp_send_json(req, 401, ");
+    return ESP_OK;
+}
 
-    int received = 0;
-    while (received < total) {
-        int ret = httpd_req_recv(req, buffer + received, total - received);
-        if (ret <= 0) {
-            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to read request body");
-            return ESP_FAIL;
+static esp_err_t network_config_put_handler(httpd_req_t *req)
+{
+    add_cors_headers(req); // Добавляем CORS заголовки к ответу
+    session_t *session = auth_middleware(req);
+ 
+    if (session) {
+        // Парсим JSON из тела запроса
+        char body[1024];
+        int ret, remaining = req->content_len;
+
+        if (remaining <= 0 || remaining >= (int)sizeof(body)) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Body too large or empty");
+            return ESP_ERR_INVALID_SIZE;
         }
-        received += ret;
-    }
-    buffer[received] = '\0';
 
-    cJSON *root = cJSON_Parse(buffer);
-    if (!root) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
-        return ESP_ERR_INVALID_ARG;
-    }
+        int whole_body_received = 0;
 
-    web_api_request_t request = {.type = WEB_API_CMD_SET_STATIC, .request_id = (uint32_t)esp_timer_get_time()};
-    bool ok = parse_ipv4_string(root, "ip", &request.network.ip, true) &&
-              parse_ipv4_string(root, "netmask", &request.network.netmask, true) &&
-              parse_ipv4_string(root, "gateway", &request.network.gateway, true) &&
-              parse_ipv4_string(root, "dns1", &request.network.dns1, false) &&
-              parse_ipv4_string(root, "dns2", &request.network.dns2, false);
-    cJSON_Delete(root);
+        while (remaining > 0) {
+            /* Read the data for the request */
+            ret = httpd_req_recv(req, body, MIN(remaining, sizeof(body)));
+            if (ret <= 0) {
+                if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+                    /* Retry if timeout occurred */
+                    continue;
+                }
+                return ESP_FAIL;
+            }
+            remaining -= ret;
+            whole_body_received += ret;
+        }
+        cJSON *root = cJSON_Parse(body);
+        bool dhcp = cJSON_GetObjectItemCaseSensitive(root, "dhcp") ? cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(root, "dhcp")) : false;
 
-    if (!ok) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid IPv4 fields");
-        return ESP_ERR_INVALID_ARG;
+        if (dhcp) {
+            network_config_t network_config = { .dhcp_enabled = true };
+            network_config_save(&network_config);
+            network_config_apply_saved();
+        } else {
+            uint32_t ip, netmask, gateway, dns1, dns2;
+            if (!parse_ipv4_string(root, "ip", &ip, true) ||
+                !parse_ipv4_string(root, "netmask", &netmask, true) ||
+                !parse_ipv4_string(root, "gateway", &gateway, true) ||
+                !parse_ipv4_string(root, "dns1", &dns1, false) ||
+                !parse_ipv4_string(root, "dns2", &dns2, false)) {
+                cJSON_Delete(root);
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid IPv4 fields");
+                return ESP_ERR_INVALID_ARG;
+            }
+            network_config_t network_config = {
+                .dhcp_enabled = false,
+                .ip = ip,
+                .netmask = netmask,
+                .gateway = gateway,
+                .dns1 = dns1,
+                .dns2 = dns2
+            };
+            network_config_save(&network_config);
+            network_config_apply_saved();
+        }
+
+        cJSON_Delete(root);
+        httpd_resp_set_status(req, "202 Accepted");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"ok\":true}");
+        
+        return ESP_OK;
     }
-    return do_api_call(req, &request);
+ 
+    httpd_resp_set_status(req, "401 Unauthorized");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"error\":\"Invalid credentials\"}");
+    //httpd_resp_send_json(req, 401, ");
+    return ESP_OK;
 }
 
 static esp_err_t reboot_post_handler(httpd_req_t *req)
@@ -198,34 +313,6 @@ static esp_err_t reboot_post_handler(httpd_req_t *req)
 }
 
 
-static esp_err_t get_client_ip(httpd_req_t *req, char *ip_buffer, size_t buffer_len) {
-    int sockfd = httpd_req_to_sockfd(req);
-    if (sockfd < 0) {
-        return ESP_FAIL;
-    }
-    
-    struct sockaddr_storage client_addr;
-    socklen_t addr_len = sizeof(client_addr);
-    memset(&client_addr, 0, sizeof(client_addr));
-    
-    if (getpeername(sockfd, (struct sockaddr *)&client_addr, &addr_len) != 0) {
-        ESP_LOGE("HTTP", "getpeername failed: errno %d", errno);
-        return ESP_FAIL;
-    }
-    
-    // Конвертируем IP в строку
-    if (client_addr.ss_family == AF_INET) {
-        struct sockaddr_in *s = (struct sockaddr_in *)&client_addr;
-        inet_ntop(AF_INET, &s->sin_addr, ip_buffer, buffer_len);
-    } else if (client_addr.ss_family == AF_INET6) {
-        struct sockaddr_in6 *s = (struct sockaddr_in6 *)&client_addr;
-        inet_ntop(AF_INET6, &s->sin6_addr, ip_buffer, buffer_len);
-    } else {
-        return ESP_FAIL;
-    }
-    
-    return ESP_OK;
-}
 
 // Обработчик логина
 esp_err_t login_handler(httpd_req_t *req) {
@@ -269,11 +356,11 @@ esp_err_t login_handler(httpd_req_t *req) {
     ESP_LOGI(TAG, "User-Agent: %s", user_agent);
     // Создаём сессию
     session_t *session = create_session(username, password, client_ip, user_agent);
-    
+    add_cors_headers(req); // Добавляем CORS заголовки к ответу
     if (session) {
         // Отправляем session_id в cookie
-        char cookie_header[64];
-        snprintf(cookie_header, sizeof(cookie_header), "SESSION_ID=%s; HttpOnly", session->session_id);
+        char cookie_header[100];
+        snprintf(cookie_header, sizeof(cookie_header), "SESSION_ID=%s; HttpOnly; Path=/api/", session->session_id);
         httpd_resp_set_hdr(req, "Set-Cookie", cookie_header);
         httpd_resp_set_status(req, "200 OK");
         httpd_resp_set_type(req, "application/json");
@@ -291,34 +378,11 @@ esp_err_t login_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
-// Middleware для проверки аутентификации
-session_t* auth_middleware(httpd_req_t *req) {
-    // Получаем session_id из cookie
-    char session_id[33];
-    size_t len = sizeof(session_id);
-    esp_err_t err = httpd_req_get_cookie_val(req, "SESSION_ID", session_id, &len);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "SESSION_ID cookie read failed: %s (%d), required_len=%u", esp_err_to_name(err), err, (unsigned)len);
-        return NULL;
-    }
-    session_id[sizeof(session_id) - 1] = '\0'; // гарантируем null-терминатор
-    ESP_LOGI(TAG, "Auth middleware, session_id: %s", session_id);
-    
-    char client_ip[INET6_ADDRSTRLEN];
-    
-    if (get_client_ip(req, client_ip, sizeof(client_ip)) == ESP_OK) {
-        ESP_LOGI("LOGIN", "Login attempt from IP: %s", client_ip);
-    } else {
-        ESP_LOGE("LOGIN", "Failed to get client IP");
-        strcpy(client_ip, "unknown");
-    }
-       
-    return validate_session(session_id, client_ip);
-}
 
 esp_err_t auth_check_handler(httpd_req_t *req) {
     ESP_LOGI(TAG, "Auth check for URI: %s", req->uri);
     session_t *session = auth_middleware(req);
+
     if (session) {
         httpd_resp_set_status(req, "200 OK");
         httpd_resp_set_type(req, "application/json");
@@ -356,12 +420,17 @@ static void register_uri_handlers(httpd_handle_t server) // handler
         .method = HTTP_GET,
         .handler = status_get_handler,
     };
-    const httpd_uri_t net_cfg_uri = {
-        .uri = "/api/network/config",
+    const httpd_uri_t net_cfg_uri_get = {
+        .uri = "/api/network/",
         .method = HTTP_GET,
         .handler = network_config_get_handler,
     };
-    const httpd_uri_t dhcp_uri = {
+    const httpd_uri_t net_cfg_uri_put = {
+        .uri = "/api/network/",
+        .method = HTTP_PUT,
+        .handler = network_config_put_handler,
+    };
+    /*const httpd_uri_t dhcp_uri = {
         .uri = "/api/network/dhcp",
         .method = HTTP_POST,
         .handler = network_dhcp_post_handler,
@@ -375,23 +444,24 @@ static void register_uri_handlers(httpd_handle_t server) // handler
         .uri = "/api/reboot",
         .method = HTTP_POST,
         .handler = reboot_post_handler,
-    };
+    };*/
     const httpd_uri_t auth_uri = {
         .uri = "/api/auth/login",
         .method = HTTP_POST,
-        .handler = login_handler, // TODO: implement auth handler
+        .handler = login_handler,
     };
     const httpd_uri_t auth_check_uri = {
         .uri = "/api/auth/check",
         .method = HTTP_GET,
-        .handler = auth_check_handler, // TODO: implement auth check handler
+        .handler = auth_check_handler,
     };
 
     httpd_register_uri_handler(server, &status_uri);
-    httpd_register_uri_handler(server, &net_cfg_uri);
-    httpd_register_uri_handler(server, &dhcp_uri);
+    httpd_register_uri_handler(server, &net_cfg_uri_get);
+    httpd_register_uri_handler(server, &net_cfg_uri_put);
+    /*httpd_register_uri_handler(server, &dhcp_uri);
     httpd_register_uri_handler(server, &static_uri);
-    httpd_register_uri_handler(server, &reboot_uri);
+    httpd_register_uri_handler(server, &reboot_uri);*/
     httpd_register_uri_handler(server, &assets_uri);
     httpd_register_uri_handler(server, &index_uri);
     httpd_register_uri_handler(server, &auth_uri);

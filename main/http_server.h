@@ -9,7 +9,7 @@ static const char *HTTP_TAG = "HTTP_TASK";
 
 static httpd_handle_t server_handle = NULL; // глобальный обработчик
 
-/ Обработчик GET
+// Обработчик GET
 static esp_err_t root_handler(httpd_req_t *req)
 {
     const char* resp = "<html><body><h1>Сервер работает в отдельной таске!</h1></body></html>";

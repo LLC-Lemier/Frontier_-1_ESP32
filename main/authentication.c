@@ -100,8 +100,6 @@ void generate_session_id(char *buffer, size_t len) {
 }
 
 esp_err_t load_user(const char *username, user_t *user) {
-    // Здесь должен быть код для загрузки пользователя из SD-карты
-    // Для демонстрации просто ищем в массиве
     for (uint32_t i = 0; i < s_users_len; i++) {
         if (strcmp(s_users[i].username, username) == 0) {
             *user = s_users[i];
@@ -233,16 +231,6 @@ esp_err_t delete_session(const char *session_id) {
         }
     }
     return ESP_FAIL;
-    /*char filepath[128];
-    snprintf(filepath, sizeof(filepath), "%s/sess_%s.json", 
-             SESSION_DIR, session_id);
-    
-    if (remove(filepath) == 0) {
-        ESP_LOGI(TAG, "Session deleted: %s", session_id);
-        return ESP_OK;
-    }
-    
-    return ESP_FAIL;*/
 }
 
 
@@ -283,8 +271,6 @@ session_t* create_session(
     strncpy(session->ip_address, ip, sizeof(session->ip_address) - 1);
     strncpy(session->user_agent, user_agent, sizeof(session->user_agent) - 1);
     session->is_active = true;
-    // 4. Очищаем старые сессии этого пользователя (опционально)
-    //
     cleanup_user_sessions(username);
     
 
@@ -362,7 +348,7 @@ void cleanup_expired_sessions(void) {
     
     while ((entry = readdir(dir)) != NULL) {
         if (strstr(entry->d_name, "sess_") == entry->d_name) {
-            char filepath[128];
+            char filepath[128]; 
             snprintf(filepath, sizeof(filepath), "%s/%s", SESSION_DIR, entry->d_name);
             
             // Загружаем сессию и проверяем expires_at

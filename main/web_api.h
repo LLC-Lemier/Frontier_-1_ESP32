@@ -7,8 +7,7 @@
 typedef enum {
     WEB_API_CMD_GET_STATUS = 1,
     WEB_API_CMD_GET_NETWORK_CONFIG,
-    WEB_API_CMD_SET_DHCP,
-    WEB_API_CMD_SET_STATIC,
+    WEB_API_CMD_PUT_NETWORK_CONFIG,
     WEB_API_CMD_REBOOT,
 } web_api_cmd_type_t;
 
