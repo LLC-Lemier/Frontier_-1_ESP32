@@ -136,25 +136,39 @@ session_t* auth_middleware(httpd_req_t *req) {
 
 static esp_err_t send_file(httpd_req_t *req, const char *path)
 {
+    const char *content_type = guess_content_type(path);
+    bool is_gzipped = false;
     FILE *f = fopen(path, "rb");
     if (!f) {
-        ESP_LOGW(TAG, "File not found: %s", path);
-        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "File not found");
-        return ESP_FAIL;
-    }
-
-    httpd_resp_set_type(req, guess_content_type(path));
-    char chunk[1024];
-    size_t read_bytes;
-    while ((read_bytes = fread(chunk, 1, sizeof(chunk), f)) > 0) {
-        if (httpd_resp_send_chunk(req, chunk, read_bytes) != ESP_OK) {
-            fclose(f);
-            httpd_resp_sendstr_chunk(req, NULL);
-            return ESP_FAIL;
+        ESP_LOGW(TAG, "File not found plain: %s", path);
+        strlcat(path, ".gz", sizeof(path)); // пробуем сжатый вариант
+        f = fopen(path, "rb");
+        if (f) {
+             ESP_LOGI(TAG, "Found gzipped version of file: %s", path);
+             is_gzipped = true;
+             httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
         }
+    } 
+    if (!f) {
+        f = fopen("/spiffs/web/index.html", "rb");
+        content_type = "text/html";
     }
-    fclose(f);
-    return httpd_resp_send_chunk(req, NULL, 0);
+    if (f) {        
+        ESP_LOGI(TAG, "Serving file: %s with content type: %s, gzipped: %s", path, content_type, is_gzipped ? "yes" : "no");
+        httpd_resp_set_type(req, content_type);
+        char chunk[1024];
+        size_t read_bytes;
+        while ((read_bytes = fread(chunk, 1, sizeof(chunk), f)) > 0) {
+            if (httpd_resp_send_chunk(req, chunk, read_bytes) != ESP_OK) {
+                fclose(f);
+                httpd_resp_sendstr_chunk(req, NULL);
+                return ESP_FAIL;
+            }
+        }
+        fclose(f);
+        return httpd_resp_send_chunk(req, NULL, 0);
+    } 
+    return ESP_FAIL;
 }
 
 static esp_err_t static_get_handler(httpd_req_t *req)
@@ -162,12 +176,42 @@ static esp_err_t static_get_handler(httpd_req_t *req)
     char path[256] = "/spiffs/web";
     const char *uri = req->uri;
 
-    if (strcmp(uri, "/") == 0) {
-        strlcat(path, "/index.html", sizeof(path));
-    } else {
-        strlcat(path, uri, sizeof(path));
+    ESP_LOGI(TAG, "Static file request: %s", uri);
+    strlcat(path, uri, sizeof(path));    
+
+    const char *content_type = guess_content_type(path);
+    bool is_gzipped = false;
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        ESP_LOGW(TAG, "File not found plain: %s", path);
+        strlcat(path, ".gz", sizeof(path)); // пробуем сжатый вариант
+        f = fopen(path, "rb");
+        if (f) {
+             ESP_LOGI(TAG, "Found gzipped version of file: %s", path);
+             is_gzipped = true;
+             httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+        }
+    } 
+    if (!f) {
+        f = fopen("/spiffs/web/index.html", "rb");
+        content_type = "text/html";
     }
-    return send_file(req, path);
+    if (f) {        
+        ESP_LOGI(TAG, "Serving file: %s with content type: %s, gzipped: %s", path, content_type, is_gzipped ? "yes" : "no");
+        httpd_resp_set_type(req, content_type);
+        char chunk[1024];
+        size_t read_bytes;
+        while ((read_bytes = fread(chunk, 1, sizeof(chunk), f)) > 0) {
+            if (httpd_resp_send_chunk(req, chunk, read_bytes) != ESP_OK) {
+                fclose(f);
+                httpd_resp_sendstr_chunk(req, NULL);
+                return ESP_FAIL;
+            }
+        }
+        fclose(f);
+        return httpd_resp_send_chunk(req, NULL, 0);
+    } 
+    return ESP_FAIL;
 }
 
 static bool parse_ipv4_string(cJSON *root, const char *field, uint32_t *out_addr, bool required)
