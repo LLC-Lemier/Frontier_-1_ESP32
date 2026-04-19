@@ -1,6 +1,7 @@
 #include "https_server.h"
 
 #include <ctype.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -26,6 +27,23 @@ static char* server_cert_pem = NULL;
 static char* server_key_pem = NULL;
 static int server_cert_len = 0;
 static int server_key_len = 0;
+
+typedef struct {
+    bool is_ca_present;
+    bool is_client_cert_present;
+    bool is_client_key_present; 
+
+    uint16_t ca_cert_len;
+    uint16_t client_cert_len;
+    uint16_t client_key_len;
+
+    char ca_cert_pem[15 * 1024]; // 15 KB для CA сертификата
+    char client_cert_pem[5 * 1024]; // 5 KB для клиентского сертификата
+    char client_key_pem[5 * 1024]; // 5 KB для клиентского ключа
+} certs_loader_ctx_t;
+
+static certs_loader_ctx_t* s_certs_ctx;
+static eap_tls_config_t* s_eap_tls_config; 
 //extern const char server_cert_pem_start[] asm("_binary_server_crt_start");  // эмуляция файлов
 //extern const char server_cert_pem_end[]   asm("_binary_server_crt_end");
 //extern const char server_key_pem_start[]  asm("_binary_server_key_start");
@@ -291,11 +309,15 @@ static esp_err_t network_config_put_handler(httpd_req_t *req)
             remaining -= ret;
             whole_body_received += ret;
         }
+
         cJSON *root = cJSON_Parse(body);
         bool dhcp = cJSON_GetObjectItemCaseSensitive(root, "dhcp") ? cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(root, "dhcp")) : false;
 
+        network_config_t runtime_config;
+        network_config_get_runtime(&runtime_config);
+
         if (dhcp) {
-            network_config_t network_config = { .dhcp_enabled = true };
+            network_config_t network_config = { .dhcp_enabled = true, .eap_tls_config = runtime_config.eap_tls_config };
             network_config_save(&network_config);
             network_config_apply_saved();
         } else {
@@ -315,7 +337,8 @@ static esp_err_t network_config_put_handler(httpd_req_t *req)
                 .netmask = netmask,
                 .gateway = gateway,
                 .dns1 = dns1,
-                .dns2 = dns2
+                .dns2 = dns2,
+                .eap_tls_config = runtime_config.eap_tls_config
             };
             network_config_save(&network_config);
             network_config_apply_saved();
@@ -340,9 +363,13 @@ static esp_err_t radius_config_get_handler(httpd_req_t *req)
 {
     add_cors_headers(req); // Добавляем CORS заголовки к ответу
     session_t *session = auth_middleware(req);
- 
+
+    
     if (session) {
+        // Обработка GET-запроса для конфигурации RADIUS
+        // ...
     }
+
  
     httpd_resp_set_status(req, "401 Unauthorized");
     httpd_resp_set_type(req, "application/json");
@@ -357,9 +384,288 @@ static esp_err_t radius_config_put_handler(httpd_req_t *req)
     add_cors_headers(req); // Добавляем CORS заголовки к ответу
     session_t *session = auth_middleware(req);
 
+    char body[1024];
+
     if (session) {
-        // Обработка PUT-запроса для конфигурации RADIUS
-        // ...
+        if (s_certs_ctx) {
+            if (s_certs_ctx->is_ca_present && s_certs_ctx->is_client_cert_present && s_certs_ctx->is_client_key_present) {
+                FILE *f_ca = fopen("/spiffs/certs/ca_new.pem", "wb");
+                FILE *f_client_cert = fopen("/spiffs/certs/client_new.crt", "wb");
+                FILE *f_client_key = fopen("/spiffs/certs/client_new.key", "wb");
+                
+                if (f_ca && f_client_cert && f_client_key) {
+                    fwrite(s_certs_ctx->ca_cert_pem, 1, s_certs_ctx->ca_cert_len, f_ca);
+                    fwrite(s_certs_ctx->client_cert_pem, 1, s_certs_ctx->client_cert_len, f_client_cert);
+                    fwrite(s_certs_ctx->client_key_pem, 1, s_certs_ctx->client_key_len, f_client_key);
+                    fclose(f_ca);
+                    fclose(f_client_cert);
+                    fclose(f_client_key);
+
+                    httpd_resp_set_status(req, "200 OK");
+                    httpd_resp_set_type(req, "application/json");
+                    httpd_resp_sendstr(req, "{\"ok\":true}");
+                    return ESP_OK;
+                }
+                if (f_ca) fclose(f_ca);
+                if (f_client_cert) fclose(f_client_cert);
+                if (f_client_key) fclose(f_client_key);
+                httpd_resp_set_status(req, "500 Internal Server Error");
+                httpd_resp_set_type(req, "application/json");
+                httpd_resp_sendstr(req, "{\"error\":\"Failed to save cert files\"}");
+                return ESP_OK;
+            
+                /*s_eap_tls_config->ca_cert_pem = s_certs_ctx->ca_cert_pem;
+                s_eap_tls_config->ca_cert_len = s_certs_ctx->ca_cert_len;
+                s_eap_tls_config->client_cert_pem = s_certs_ctx->client_cert_pem;
+                s_eap_tls_config->client_cert_len = s_certs_ctx->client_cert_len;
+                s_eap_tls_config->client_key_pem = s_certs_ctx->client_key_pem;
+                s_eap_tls_config->client_key_len = s_certs_ctx->client_key_len;
+
+                network_config_t runtime_config;
+                network_config_get_runtime(&runtime_config);
+                runtime_config.eap_tls_config = s_eap_tls_config;
+
+                network_config_save(&runtime_config);
+                network_config_apply_saved();
+
+
+                httpd_resp_set_status(req, "202 Accepted");
+                httpd_resp_set_type(req, "application/json");
+                httpd_resp_sendstr(req, "{\"ok\":true}");
+                return ESP_OK*/
+            } 
+            httpd_resp_set_status(req, "428 Precondition Required");
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_sendstr(req, "{\"error\":\"CA cert, client cert and client key must all be uploaded before applying EAP-TLS config\"}");
+            return ESP_ERR_INVALID_STATE;
+        }
+        int ret, remaining = req->content_len;
+
+        if (remaining <= 0 || remaining >= (int)sizeof(body)) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Body too large or empty");
+            return ESP_ERR_INVALID_SIZE;
+        }
+
+        int whole_body_received = 0;
+
+        while (remaining > 0) {
+            /* Read the data for the request */
+            ret = httpd_req_recv(req, body, MIN(remaining, sizeof(body)));
+            if (ret <= 0) {
+                if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+                    /* Retry if timeout occurred */
+                    continue;
+                }
+                return ESP_FAIL;
+            }
+            remaining -= ret;
+            whole_body_received += ret;
+        }
+        cJSON *root = cJSON_Parse(body);
+        
+        s_eap_tls_config = malloc(sizeof(eap_tls_config_t));
+        if (!s_eap_tls_config) {
+            cJSON_Delete(root);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Memory allocation failed");
+            return ESP_ERR_NO_MEM;
+        }
+
+        s_certs_ctx = malloc(sizeof(certs_loader_ctx_t));
+
+        if (!s_certs_ctx) {
+            free(s_eap_tls_config);
+            s_eap_tls_config = NULL;
+            cJSON_Delete(root);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Memory allocation failed");
+            return ESP_ERR_NO_MEM;
+        }
+
+        s_certs_ctx->ca_cert_len = 0;
+        s_certs_ctx->client_cert_len = 0;
+        s_certs_ctx->client_key_len = 0;
+
+        const char *identity = cJSON_GetObjectItemCaseSensitive(root, "identity") ? cJSON_GetObjectItemCaseSensitive(root, "identity")->valuestring : "";
+
+        if (strlen(identity) < 256) {
+            ESP_LOGI(TAG, "Received EAP-TLS config with identity: %s", identity);
+        } else {
+            ESP_LOGW(TAG, "Received EAP-TLS config with too long identity, length: %zu", strlen(identity));
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Identity too long");
+            free(s_eap_tls_config);
+            s_eap_tls_config = NULL;
+            free(s_certs_ctx);
+            s_certs_ctx = NULL;
+            cJSON_Delete(root);
+            return ESP_ERR_INVALID_ARG;
+        }
+        
+        strlcpy(s_eap_tls_config->identity, identity, sizeof(s_eap_tls_config->identity));
+        s_eap_tls_config->timeout_ms = cJSON_GetObjectItemCaseSensitive(root, "timeout_ms") ? cJSON_GetObjectItemCaseSensitive(root, "timeout_ms")->valueint : 60000;
+        s_eap_tls_config->max_retries = cJSON_GetObjectItemCaseSensitive(root, "max_retries") ? cJSON_GetObjectItemCaseSensitive(root, "max_retries")->valueint : 5;
+
+        cJSON_Delete(root);
+
+        char response[512];
+        snprintf(response, sizeof(response), "{\"identity\":\"%s\", \"timeout_ms\":%" PRIu32 ", \"max_retries\":%d}", s_eap_tls_config->identity, s_eap_tls_config->timeout_ms, s_eap_tls_config->max_retries);
+        httpd_resp_set_status(req, "202 Accepted");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, response);
+        return ESP_OK;
+    }
+
+    httpd_resp_set_status(req, "401 Unauthorized");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"error\":\"Invalid credentials\"}");
+    return ESP_OK;
+}
+
+static esp_err_t radius_config_ca_put_handler(httpd_req_t *req)
+{
+    add_cors_headers(req); // Добавляем CORS заголовки к ответу
+    session_t *session = auth_middleware(req);
+
+    if (session) {
+        if (s_certs_ctx) {
+            s_certs_ctx->is_ca_present = true;
+            s_certs_ctx->ca_cert_len = req->content_len;
+
+            int ret, remaining = req->content_len;
+
+            if (remaining <= 0 || remaining >= (int)sizeof(s_certs_ctx->ca_cert_pem)) {
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Body too large or empty");
+                return ESP_ERR_INVALID_SIZE;
+            }
+
+            while (remaining > 0) {
+                /* Read the data for the request */
+                ret = httpd_req_recv(req, s_certs_ctx->ca_cert_pem, MIN(remaining, sizeof(s_certs_ctx->ca_cert_pem)));
+                if (ret <= 0) {
+                    if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+                        /* Retry if timeout occurred */
+                        continue;
+                    }
+                    return ESP_FAIL;
+                }
+                remaining -= ret;
+            }
+
+            s_certs_ctx->ca_cert_pem[s_certs_ctx->ca_cert_len] = '\0'; // гарантируем null-терминатор
+
+            char response[128];
+            snprintf(response, sizeof(response), "{\"ok\":true, \"ca_cert_len\":%d}", s_certs_ctx->ca_cert_len);
+
+            httpd_resp_set_status(req, "202 Accepted");
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_sendstr(req, response);
+            return ESP_OK;
+        }
+        httpd_resp_set_status(req, "428 Precondition Required");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"error\":\"EAP-TLS config must be set before uploading CA cert\"}");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    httpd_resp_set_status(req, "401 Unauthorized");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"error\":\"Invalid credentials\"}");
+    return ESP_OK;
+}
+
+static esp_err_t radius_config_ccert_put_handler(httpd_req_t *req)
+{
+    add_cors_headers(req); // Добавляем CORS заголовки к ответу
+    session_t *session = auth_middleware(req);
+
+    if (session) {
+        if (s_certs_ctx) {
+            s_certs_ctx->is_client_cert_present = true;
+            s_certs_ctx->client_cert_len = req->content_len;
+
+            int ret, remaining = req->content_len;
+
+            if (remaining <= 0 || remaining >= (int)sizeof(s_certs_ctx->client_cert_pem)) {
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Body too large or empty");
+                return ESP_ERR_INVALID_SIZE;
+            }
+
+            while (remaining > 0) {
+                /* Read the data for the request */
+                ret = httpd_req_recv(req, s_certs_ctx->client_cert_pem, MIN(remaining, sizeof(s_certs_ctx->client_cert_pem)));
+                if (ret <= 0) {
+                    if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+                        /* Retry if timeout occurred */
+                        continue;
+                    }
+                    return ESP_FAIL;
+                }
+                remaining -= ret;
+            }
+
+            s_certs_ctx->client_cert_pem[s_certs_ctx->client_cert_len] = '\0'; // гарантируем null-терминатор
+
+            char response[128];
+            snprintf(response, sizeof(response), "{\"ok\":true, \"client_cert_len\":%d}", s_certs_ctx->client_cert_len);
+            httpd_resp_set_status(req, "202 Accepted");
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_sendstr(req, response);
+            return ESP_OK;
+        }
+        httpd_resp_set_status(req, "428 Precondition Required");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"error\":\"EAP-TLS config must be set before uploading client cert\"}");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    httpd_resp_set_status(req, "401 Unauthorized");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"error\":\"Invalid credentials\"}");
+    return ESP_OK;
+}
+
+static esp_err_t radius_config_ckey_put_handler(httpd_req_t *req)
+{
+    add_cors_headers(req); // Добавляем CORS заголовки к ответу
+    session_t *session = auth_middleware(req);
+
+    if (session) {
+        if (s_certs_ctx) {
+            s_certs_ctx->is_client_key_present = true;
+            s_certs_ctx->client_key_len = req->content_len;
+
+            int ret, remaining = req->content_len;
+
+            if (remaining <= 0 || remaining >= (int)sizeof(s_certs_ctx->client_key_pem)) {
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Body too large or empty");
+                return ESP_ERR_INVALID_SIZE;
+            }
+
+            while (remaining > 0) {
+                /* Read the data for the request */
+                ret = httpd_req_recv(req, s_certs_ctx->client_key_pem, MIN(remaining, sizeof(s_certs_ctx->client_key_pem)));
+                if (ret <= 0) {
+                    if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+                        /* Retry if timeout occurred */
+                        continue;
+                    }
+                    return ESP_FAIL;
+                }
+                remaining -= ret;
+            }
+
+            s_certs_ctx->client_key_pem[s_certs_ctx->client_key_len] = '\0'; // гарантируем null-терминатор
+
+            char response[128];
+            snprintf(response, sizeof(response), "{\"ok\":true, \"client_key_len\":%d}", s_certs_ctx->client_key_len);
+
+            httpd_resp_set_status(req, "202 Accepted");
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_sendstr(req, response);
+            return ESP_OK;
+        }
+        httpd_resp_set_status(req, "428 Precondition Required");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"error\":\"EAP-TLS config must be set before uploading client key\"}");
+        return ESP_ERR_INVALID_STATE;
     }
 
     httpd_resp_set_status(req, "401 Unauthorized");
@@ -373,6 +679,7 @@ static esp_err_t reboot_post_handler(httpd_req_t *req)
     web_api_request_t request = {.type = WEB_API_CMD_REBOOT, .request_id = (uint32_t)esp_timer_get_time()};
     return do_api_call(req, &request);
 }
+
 
 
 
@@ -493,14 +800,29 @@ static void register_uri_handlers(httpd_handle_t server) // handler
         .handler = network_config_put_handler,
     };
     const httpd_uri_t radius_cfg_uri_get = {
-        .uri = "/api/radius",
+        .uri = "/api/radius/",
         .method = HTTP_GET,
         .handler = radius_config_get_handler,
     };
     const httpd_uri_t radius_cfg_uri_put = {
-        .uri = "/api/radius",
+        .uri = "/api/radius/",
         .method = HTTP_PUT,
         .handler = radius_config_put_handler,
+    };
+    const httpd_uri_t radius_cfg_ca_uri_put = {
+        .uri = "/api/radius/ca/",
+            .method = HTTP_PUT,
+            .handler = radius_config_ca_put_handler,
+        };
+    const httpd_uri_t radius_cfg_ccert_uri_put = {
+        .uri = "/api/radius/ccert/",
+        .method = HTTP_PUT,
+        .handler = radius_config_ccert_put_handler,
+    };
+    const httpd_uri_t radius_cfg_ckey_uri_put = {
+        .uri = "/api/radius/ckey/",
+        .method = HTTP_PUT,
+        .handler = radius_config_ckey_put_handler,
     };
     /*const httpd_uri_t dhcp_uri = {
         .uri = "/api/network/dhcp",
@@ -531,6 +853,12 @@ static void register_uri_handlers(httpd_handle_t server) // handler
     httpd_register_uri_handler(server, &status_uri);
     httpd_register_uri_handler(server, &net_cfg_uri_get);
     httpd_register_uri_handler(server, &net_cfg_uri_put);
+    httpd_register_uri_handler(server, &radius_cfg_uri_get);
+    httpd_register_uri_handler(server, &radius_cfg_uri_put);
+    httpd_register_uri_handler(server, &radius_cfg_ca_uri_put);
+    httpd_register_uri_handler(server, &radius_cfg_ccert_uri_put);
+    httpd_register_uri_handler(server, &radius_cfg_ckey_uri_put);
+
     /*httpd_register_uri_handler(server, &dhcp_uri);
     httpd_register_uri_handler(server, &static_uri);
     httpd_register_uri_handler(server, &reboot_uri);*/

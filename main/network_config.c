@@ -214,6 +214,10 @@ esp_err_t network_config_get_runtime(network_config_t *config)
         config->dns2 = dns.ip.u_addr.ip4.addr;
     }
 
+    if (s_saved_config.eap_tls_config) {
+        config->eap_tls_config = &s_saved_eap_tls_config;
+    }
+
     return ESP_OK;
 }
 

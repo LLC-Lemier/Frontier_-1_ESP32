@@ -45,7 +45,7 @@ typedef struct {
 
 // Конфигурация Supplicant
 typedef struct {
-    char identity[64];           // Идентификатор клиента
+    char identity[256];           // Идентификатор клиента
     const char *ca_cert_pem;     // CA сертификат
     size_t ca_cert_len;          // Длина CA сертификата
     const char *client_cert_pem; // Клиентский сертификат
