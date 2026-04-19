@@ -10,18 +10,17 @@
 #include "esp_http_server.h"
 #include "esp_https_server.h"
 #include "esp_log.h"
-#include "esp_spiffs.h"
 #include "esp_timer.h"
 #include "web_api.h"
 #include "lwip/ip4_addr.h"
 #include <lwip/sockets.h>
 #include "authentication.h"
 #include "network_config.h"
+#include "spiffs_driver.h"
 
 static const char *TAG = "HTTPS";
 static httpd_handle_t s_server;
 static httpd_handle_t s_ssl_server;
-static bool is_spiffs_mounted = false; 
 
 static char* server_cert_pem = NULL; 
 static char* server_key_pem = NULL;
@@ -64,19 +63,6 @@ esp_err_t add_cors_headers(httpd_req_t *req) {
                        "Content-Type, Authorization, X-Requested-With");
     
     return ESP_OK;
-}
-static esp_err_t mount_spiffs(void) // раздел фронта
-{
-    if (is_spiffs_mounted) {
-        return ESP_OK; // уже смонтирован
-    }
-    esp_vfs_spiffs_conf_t conf = {
-        .base_path = "/spiffs",
-        .partition_label = "storage",
-        .max_files = 16,
-        .format_if_mount_failed = false,
-    };
-    return esp_vfs_spiffs_register(&conf);
 }
 
 static esp_err_t get_client_ip(httpd_req_t *req, char *ip_buffer, size_t buffer_len) {
@@ -350,6 +336,38 @@ static esp_err_t network_config_put_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+static esp_err_t radius_config_get_handler(httpd_req_t *req)
+{
+    add_cors_headers(req); // Добавляем CORS заголовки к ответу
+    session_t *session = auth_middleware(req);
+ 
+    if (session) {
+    }
+ 
+    httpd_resp_set_status(req, "401 Unauthorized");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"error\":\"Invalid credentials\"}");
+    //httpd_resp_send_json(req, 401, ");
+    return ESP_OK;
+}
+
+
+static esp_err_t radius_config_put_handler(httpd_req_t *req)
+{
+    add_cors_headers(req); // Добавляем CORS заголовки к ответу
+    session_t *session = auth_middleware(req);
+
+    if (session) {
+        // Обработка PUT-запроса для конфигурации RADIUS
+        // ...
+    }
+
+    httpd_resp_set_status(req, "401 Unauthorized");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"error\":\"Invalid credentials\"}");
+    return ESP_OK;
+}
+
 static esp_err_t reboot_post_handler(httpd_req_t *req)
 {
     web_api_request_t request = {.type = WEB_API_CMD_REBOOT, .request_id = (uint32_t)esp_timer_get_time()};
@@ -473,6 +491,16 @@ static void register_uri_handlers(httpd_handle_t server) // handler
         .uri = "/api/network/",
         .method = HTTP_PUT,
         .handler = network_config_put_handler,
+    };
+    const httpd_uri_t radius_cfg_uri_get = {
+        .uri = "/api/radius",
+        .method = HTTP_GET,
+        .handler = radius_config_get_handler,
+    };
+    const httpd_uri_t radius_cfg_uri_put = {
+        .uri = "/api/radius",
+        .method = HTTP_PUT,
+        .handler = radius_config_put_handler,
     };
     /*const httpd_uri_t dhcp_uri = {
         .uri = "/api/network/dhcp",

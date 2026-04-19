@@ -1,13 +1,14 @@
 idf_component_register(
     SRCS
         "authentication.c"
-        "ethernet_init.c"
-        "main.c"
         "eap_tls_supplicant.c"
-        "nvs_config.c"
-        "network_config.c"
-        "web_api.c"
+        "ethernet_init.c"
         "https_server.c"
+        "main.c"
+        "network_config.c"
+        "nvs_config.c"
+        "spiffs_driver.c"
+        "web_api.c"
     INCLUDE_DIRS "."
     REQUIRES
         esp_http_server

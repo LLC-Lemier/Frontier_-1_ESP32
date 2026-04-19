@@ -8,10 +8,68 @@
 #include "ethernet_init.h"
 #include "lwip/ip4_addr.h"
 #include "nvs_config.h"
+#include "spiffs_driver.h"
 
 static const char *TAG = "NET_CFG";
 static network_config_t s_saved_config;
-static eap_tls_config_t s_saved_eap_tls_config;
+static eap_tls_config_t s_saved_eap_tls_config; 
+static char* ca_cert_pem = NULL;
+static char* client_cert_pem = NULL;
+static char* client_key_pem = NULL; 
+
+static esp_err_t load_eap_tls_config_from_spiffs(eap_tls_config_t *config)
+{
+    FILE* f_ca = fopen("/spiffs/certs/ca.pem", "rb");
+    FILE* f_client_cert = fopen("/spiffs/certs/client.crt", "rb");
+    FILE* f_client_key = fopen("/spiffs/certs/client.key", "rb");
+
+    if (!f_ca || !f_client_cert || !f_client_key) {
+        ESP_LOGW(TAG, "One or more EAP-TLS cert files not found in SPIFFS");
+        if (f_ca) fclose(f_ca);
+        if (f_client_cert) fclose(f_client_cert);
+        if (f_client_key) fclose(f_client_key);
+        return ESP_OK; // Не критично, просто продолжим без EAP-TLS конфига
+    }
+
+    fseek(f_ca, 0, SEEK_END);
+    size_t ca_len = ftell(f_ca);
+    fseek(f_ca, 0, SEEK_SET);
+
+    fseek(f_client_cert, 0, SEEK_END);
+    size_t client_cert_len = ftell(f_client_cert);
+    fseek(f_client_cert, 0, SEEK_SET);
+
+    fseek(f_client_key, 0, SEEK_END);
+    size_t client_key_len = ftell(f_client_key);
+    fseek(f_client_key, 0, SEEK_SET);
+
+    ca_cert_pem = malloc(ca_len + 1);
+    client_cert_pem = malloc(client_cert_len + 1);
+    client_key_pem = malloc(client_key_len + 1);
+    config->ca_cert_pem = ca_cert_pem;
+    config->client_cert_pem = client_cert_pem;
+    config->client_key_pem = client_key_pem;
+    config->ca_cert_len = ca_len;
+    config->client_cert_len = client_cert_len;
+    config->client_key_len = client_key_len;
+
+    if (config->ca_cert_pem && config->client_cert_pem && config->client_key_pem) {
+        fread(ca_cert_pem, 1, ca_len, f_ca);
+        fread(client_cert_pem, 1, client_cert_len, f_client_cert);
+        fread(client_key_pem, 1, client_key_len, f_client_key);
+
+        ca_cert_pem[ca_len] = '\0';
+        client_cert_pem[client_cert_len] = '\0';
+        client_key_pem[client_key_len] = '\0';
+
+        return ESP_OK;
+    } 
+    ESP_LOGE(TAG, "Failed to allocate memory for EAP-TLS certs");
+    if (ca_cert_pem) free(ca_cert_pem);
+    if (client_cert_pem) free(client_cert_pem);
+    if (client_key_pem) free(client_key_pem);
+    return ESP_ERR_NO_MEM;
+}
 
 static esp_err_t set_dns_if_present(esp_netif_t *netif, esp_netif_dns_type_t type, uint32_t dns_addr)
 {
@@ -27,8 +85,31 @@ static esp_err_t set_dns_if_present(esp_netif_t *netif, esp_netif_dns_type_t typ
 
 esp_err_t network_config_init(void)
 {
+    ESP_RETURN_ON_ERROR(mount_spiffs(), TAG, "failed to mount spiffs");
     ESP_RETURN_ON_ERROR(nvs_config_init(), TAG, "nvs init failed");
-    return nvs_config_load_network(&s_saved_config, &s_saved_eap_tls_config);
+    ESP_RETURN_ON_ERROR(
+        nvs_config_load_network(&s_saved_config, &s_saved_eap_tls_config),
+        TAG, 
+        "failed to load network config from NVS"
+    );
+
+    if (s_saved_config.eap_tls_config == NULL) {
+        ESP_LOGI(TAG, "No EAP-TLS config found in NVS");
+    } else {
+        ESP_LOGI(
+            TAG,
+            "EAP-TLS config loaded from NVS with timeout %d ms and max retries %d",
+            s_saved_eap_tls_config.timeout_ms, 
+            s_saved_eap_tls_config.max_retries
+        );
+        esp_err_t ret = load_eap_tls_config_from_spiffs(&s_saved_eap_tls_config);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to load EAP-TLS certs from SPIFFS: %s", esp_err_to_name(ret));
+            return ret;
+        }
+    }
+    
+    return ESP_OK;
 }
 
 esp_err_t network_config_load(network_config_t *config)
@@ -44,7 +125,7 @@ esp_err_t network_config_save(const network_config_t *config)
 {
     if (!config) {
         return ESP_ERR_INVALID_ARG;
-    }
+    } 
     s_saved_config = *config;
     return nvs_config_save_network(config, config->eap_tls_config);
 }
