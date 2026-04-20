@@ -7,6 +7,7 @@
 #include "tcp_server.h"
 #include "https_server.h"
 #include "network_config.h"
+#include "ntp_adapter.h"
 #include "web_api.h"
 
 static const char *TAG = "MAIN";
@@ -52,9 +53,24 @@ void app_main(void)
         ESP_LOGI(TAG, "DHCP is disabled in saved config, applying static IP settings");
     }
 
+    init_ntp(saved_config->ntp_config);
+
     ESP_ERROR_CHECK(web_api_start()); // url handler
     xTaskCreate(tcp_server_task, "tcp_server", 4096, NULL, 5, NULL);
     ESP_ERROR_CHECK(start_https_server_task()); //
+
+        time_t now = 0;
+    struct tm timeinfo = { 0 };
+
+    time(&now);
+    localtime_r(&now, &timeinfo);
+    
+    char strftime_buf[64];
+    strftime(strftime_buf, sizeof(strftime_buf), "%c", &timeinfo);
+    ESP_LOGI("SNTP", "Current date/time: %s", strftime_buf);
+
+    // LOG FREEMEMORY
+    ESP_LOGI(TAG, "Free heap memory: %d bytes", esp_get_free_heap_size());
     while (1)
     {
         vTaskDelay(pdMS_TO_TICKS(10000));

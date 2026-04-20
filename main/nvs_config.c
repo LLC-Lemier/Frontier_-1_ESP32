@@ -19,8 +19,11 @@ esp_err_t nvs_config_init(void)
     return ret;
 }
 
-esp_err_t nvs_config_load_network(network_config_t *config, eap_tls_config_t* eap_tls_config) // заполняем структуру конфигом из NVS
-{
+esp_err_t nvs_config_load_network(
+    network_config_t *config,
+    eap_tls_config_t* eap_tls_config,
+    ntp_config_t* ntp_config
+) { // заполняем структуру конфигом из NVS
     if (!config) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -28,6 +31,7 @@ esp_err_t nvs_config_load_network(network_config_t *config, eap_tls_config_t* ea
     memset(config, 0, sizeof(*config)); // ОЗУ (SRAM)  может хранить мусор
     config->dhcp_enabled = true;
     config->eap_tls_config = NULL; // по умолчанию указатель на EAP-TLS конфиг не указывает ни на что 
+    config->ntp_config = ntp_config; // указатель на NTP конфиг, который может быть заполнен внутри функции
     
     nvs_handle_t handle;
     esp_err_t ret = nvs_open(NAMESPACE, NVS_READONLY, &handle);
@@ -45,7 +49,6 @@ esp_err_t nvs_config_load_network(network_config_t *config, eap_tls_config_t* ea
 
         (void)nvs_get_u32(handle, "eap_timeout_ms", &eap_tls_config->timeout_ms);
         (void)nvs_get_u8(handle, "eap_max_retries", &eap_tls_config->max_retries);
-        
     }
 
     uint8_t is_static = 1;
@@ -60,12 +63,36 @@ esp_err_t nvs_config_load_network(network_config_t *config, eap_tls_config_t* ea
     (void)nvs_get_u32(handle, "dns1", &config->dns1);
     (void)nvs_get_u32(handle, "dns2", &config->dns2);
 
+    for (int i = 0; i < 5; i++) {
+        char key1[20];
+        snprintf(key1, sizeof(key1), "ntp_server_type%d", i + 1);
+        nvs_get_u8(handle, key1, &ntp_config->server_type[i]);
+        if (ntp_config->server_type[i] != NTP_SERVER_NONE) {
+            ESP_LOGI(TAG, "NTP server %d type: %d", i + 1, ntp_config->server_type[i]);
+            size_t required_size = 0;
+            char key[20];
+            snprintf(key, sizeof(key), "ntp_server%d", i + 1);
+            ret = nvs_get_str(handle, key, NULL, &required_size);
+            if (ret == ESP_OK && required_size > 0) {
+                char *server = malloc(required_size);
+                if (server) {
+                    nvs_get_str(handle, key, server, &required_size);
+                    ntp_config->server[i] = server;
+                }
+            } else {
+                ESP_LOGI(TAG, "NTP server %d not set", i + 1);
+            }
+        }
+    }
     nvs_close(handle);
     return ESP_OK;
 }
 
-esp_err_t nvs_config_save_network(const network_config_t *config, const eap_tls_config_t* eap_tls_config)
-{
+esp_err_t nvs_config_save_network(
+    const network_config_t *config,
+    const eap_tls_config_t* eap_tls_config,
+    const ntp_config_t* ntp_config
+) {
     if (!config) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -85,6 +112,19 @@ esp_err_t nvs_config_save_network(const network_config_t *config, const eap_tls_
         ESP_GOTO_ON_ERROR(nvs_set_u8(handle, "eap_max_retries", eap_tls_config->max_retries), exit, TAG, "save eap_max_retries failed");
     } else {
         ESP_GOTO_ON_ERROR(nvs_set_u8(handle, "is_eap", 0), exit, TAG, "save is_eap failed");
+    }
+
+    if (ntp_config) {
+        for (int i = 0; i < 5; i++) {
+            ESP_LOGI(TAG, "Saving NTP server %d type: %d", i + 1, ntp_config->server_type[i]);
+            char key[20];
+            snprintf(key, sizeof(key), "ntp_server_type%d", i + 1);
+            ESP_GOTO_ON_ERROR(nvs_set_u8(handle, key, ntp_config->server_type[i]), exit, TAG, "save ntp_server_type failed");
+            if (ntp_config->server_type[i] != NTP_SERVER_NONE && ntp_config->server[i]) {
+                snprintf(key, sizeof(key), "ntp_server%d", i + 1);
+                ESP_GOTO_ON_ERROR(nvs_set_str(handle, key, ntp_config->server[i]), exit, TAG, "save ntp_server failed");
+            }
+        }
     }
     ESP_GOTO_ON_ERROR(nvs_commit(handle), exit, TAG, "nvs_commit failed");
 

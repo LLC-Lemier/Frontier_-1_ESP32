@@ -317,7 +317,11 @@ static esp_err_t network_config_put_handler(httpd_req_t *req)
         network_config_get_runtime(&runtime_config);
 
         if (dhcp) {
-            network_config_t network_config = { .dhcp_enabled = true, .eap_tls_config = runtime_config.eap_tls_config };
+            network_config_t network_config = { 
+                .dhcp_enabled = true,
+                .eap_tls_config = runtime_config.eap_tls_config,
+                .ntp_config = runtime_config.ntp_config
+            };
             network_config_save(&network_config);
             network_config_apply_saved();
         } else {
@@ -338,7 +342,8 @@ static esp_err_t network_config_put_handler(httpd_req_t *req)
                 .gateway = gateway,
                 .dns1 = dns1,
                 .dns2 = dns2,
-                .eap_tls_config = runtime_config.eap_tls_config
+                .eap_tls_config = runtime_config.eap_tls_config,
+                .ntp_config = runtime_config.ntp_config
             };
             network_config_save(&network_config);
             network_config_apply_saved();
@@ -413,26 +418,6 @@ static esp_err_t radius_config_put_handler(httpd_req_t *req)
                 httpd_resp_set_type(req, "application/json");
                 httpd_resp_sendstr(req, "{\"error\":\"Failed to save cert files\"}");
                 return ESP_OK;
-            
-                /*s_eap_tls_config->ca_cert_pem = s_certs_ctx->ca_cert_pem;
-                s_eap_tls_config->ca_cert_len = s_certs_ctx->ca_cert_len;
-                s_eap_tls_config->client_cert_pem = s_certs_ctx->client_cert_pem;
-                s_eap_tls_config->client_cert_len = s_certs_ctx->client_cert_len;
-                s_eap_tls_config->client_key_pem = s_certs_ctx->client_key_pem;
-                s_eap_tls_config->client_key_len = s_certs_ctx->client_key_len;
-
-                network_config_t runtime_config;
-                network_config_get_runtime(&runtime_config);
-                runtime_config.eap_tls_config = s_eap_tls_config;
-
-                network_config_save(&runtime_config);
-                network_config_apply_saved();
-
-
-                httpd_resp_set_status(req, "202 Accepted");
-                httpd_resp_set_type(req, "application/json");
-                httpd_resp_sendstr(req, "{\"ok\":true}");
-                return ESP_OK*/
             } 
             httpd_resp_set_status(req, "428 Precondition Required");
             httpd_resp_set_type(req, "application/json");
@@ -674,6 +659,132 @@ static esp_err_t radius_config_ckey_put_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+static esp_err_t ntp_config_get_handler(httpd_req_t *req)
+{
+    add_cors_headers(req); // Добавляем CORS заголовки к ответу
+    session_t *session = auth_middleware(req);
+
+    if (session) {
+        char response[2048];
+        
+        network_config_t saved = {0};
+        network_config_load(&saved);
+        snprintf(
+            response, 
+            sizeof(response), 
+            "{\"servers\": [\"%s\", \"%s\", \"%s\", \"%s\", \"%s\"]}", 
+            saved.ntp_config->server[0],
+            saved.ntp_config->server[1],
+            saved.ntp_config->server[2],
+            saved.ntp_config->server[3],
+            saved.ntp_config->server[4]
+        );
+        httpd_resp_set_status(req, "200 OK");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, response);
+
+        return ESP_OK;
+    }
+
+    httpd_resp_set_status(req, "401 Unauthorized");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"error\":\"Invalid credentials\"}");
+    return ESP_OK;
+}
+
+static esp_err_t ntp_config_put_handler(httpd_req_t *req)
+{
+    add_cors_headers(req); // Добавляем CORS заголовки к ответу
+    session_t *session = auth_middleware(req);
+
+    if (session) {
+        // Парсим JSON из тела запроса
+        char body[2048];
+        int ret, remaining = req->content_len;
+
+        if (remaining <= 0 || remaining >= (int)sizeof(body)) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Body too large or empty");
+            return ESP_ERR_INVALID_SIZE;
+        }
+
+        int whole_body_received = 0;
+
+        while (remaining > 0) {
+            /* Read the data for the request */
+            ret = httpd_req_recv(req, body, MIN(remaining, sizeof(body)));
+            if (ret <= 0) {
+                if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+                    /* Retry if timeout occurred */
+                    continue;
+                }
+                return ESP_FAIL;
+            }
+            remaining -= ret;
+            whole_body_received += ret;
+        }
+
+        //network_config_t runtime_config;
+        network_config_t* saved_config = network_config_get_saved();
+
+        cJSON *root = cJSON_Parse(body);
+        const cJSON *servers = cJSON_GetObjectItem(root, "servers");
+ 
+        if (!servers || !cJSON_IsArray(servers)) {
+            cJSON_Delete(root);
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing or invalid 'servers' array");
+            return ESP_ERR_INVALID_ARG;
+        }
+
+        int server_count = cJSON_GetArraySize(servers);
+        if (server_count < 1 || server_count > 5) {
+            cJSON_Delete(root);
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Number of servers must be between 1 and 5");
+            return ESP_ERR_INVALID_ARG;
+        }
+
+        ip_addr_t temp;
+
+        for (int i = 0; i < server_count; i++) {
+            cJSON *server = cJSON_GetArrayItem(servers, i);
+            if (!cJSON_IsString(server) || server->valuestring == NULL) {
+                cJSON_Delete(root);
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "All servers must be valid strings");
+                return ESP_ERR_INVALID_ARG;
+            }
+            if (strlen(server->valuestring) == 0) {
+                saved_config->ntp_config->server_type[i] = NTP_SERVER_NONE;
+                continue; // пропускаем пустые строки, они будут игнорироваться при сохранении
+            }
+            // Здесь можно добавить дополнительную валидацию строки сервера, если нужно
+            if (ipaddr_aton(server->valuestring, &temp)) {
+                saved_config->ntp_config->server_type[i] = NTP_SERVER_IP_ADDRESS;
+            } else {
+                saved_config->ntp_config->server_type[i] = NTP_SERVER_DOMAIN_NAME;
+            }
+            if (saved_config->ntp_config->server[i]) {
+                free(saved_config->ntp_config->server[i]); // освобождаем старую строку, если она была
+            } 
+            if (strlen(server->valuestring) < 256) {
+                saved_config->ntp_config->server[i] = strdup(server->valuestring); // сохраняем новую строку
+            } else {
+                saved_config->ntp_config->server[i] = NULL; // если строка слишком длинная, не сохраняем её
+            }
+        }
+
+        network_config_save(saved_config);
+        network_config_apply_saved();
+
+        cJSON_Delete(root);
+        
+        return ESP_OK;
+    }
+
+    httpd_resp_set_status(req, "401 Unauthorized");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"error\":\"Invalid credentials\"}");
+    return ESP_OK;
+}
+
 static esp_err_t reboot_post_handler(httpd_req_t *req)
 {
     web_api_request_t request = {.type = WEB_API_CMD_REBOOT, .request_id = (uint32_t)esp_timer_get_time()};
@@ -824,6 +935,17 @@ static void register_uri_handlers(httpd_handle_t server) // handler
         .method = HTTP_PUT,
         .handler = radius_config_ckey_put_handler,
     };
+    const httpd_uri_t ntp_cfg_uri_get = {
+        .uri = "/api/ntp/",
+        .method = HTTP_GET,
+        .handler = ntp_config_get_handler,
+    };  
+    const httpd_uri_t ntp_cfg_uri_put = {
+        .uri = "/api/ntp/",
+        .method = HTTP_PUT,
+        .handler = ntp_config_put_handler,
+    };
+
     /*const httpd_uri_t dhcp_uri = {
         .uri = "/api/network/dhcp",
         .method = HTTP_POST,
@@ -851,13 +973,18 @@ static void register_uri_handlers(httpd_handle_t server) // handler
     };
 
     httpd_register_uri_handler(server, &status_uri);
+    
     httpd_register_uri_handler(server, &net_cfg_uri_get);
     httpd_register_uri_handler(server, &net_cfg_uri_put);
+
     httpd_register_uri_handler(server, &radius_cfg_uri_get);
     httpd_register_uri_handler(server, &radius_cfg_uri_put);
     httpd_register_uri_handler(server, &radius_cfg_ca_uri_put);
     httpd_register_uri_handler(server, &radius_cfg_ccert_uri_put);
     httpd_register_uri_handler(server, &radius_cfg_ckey_uri_put);
+
+    httpd_register_uri_handler(server, &ntp_cfg_uri_get);
+    httpd_register_uri_handler(server, &ntp_cfg_uri_put);
 
     /*httpd_register_uri_handler(server, &dhcp_uri);
     httpd_register_uri_handler(server, &static_uri);

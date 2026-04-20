@@ -13,6 +13,7 @@
 static const char *TAG = "NET_CFG";
 static network_config_t s_saved_config;
 static eap_tls_config_t s_saved_eap_tls_config; 
+static ntp_config_t s_saved_ntp_config;
 static char* ca_cert_pem = NULL;
 static char* client_cert_pem = NULL;
 static char* client_key_pem = NULL; 
@@ -88,7 +89,7 @@ esp_err_t network_config_init(void)
     ESP_RETURN_ON_ERROR(mount_spiffs(), TAG, "failed to mount spiffs");
     ESP_RETURN_ON_ERROR(nvs_config_init(), TAG, "nvs init failed");
     ESP_RETURN_ON_ERROR(
-        nvs_config_load_network(&s_saved_config, &s_saved_eap_tls_config),
+        nvs_config_load_network(&s_saved_config, &s_saved_eap_tls_config, &s_saved_ntp_config),
         TAG, 
         "failed to load network config from NVS"
     );
@@ -127,7 +128,7 @@ esp_err_t network_config_save(const network_config_t *config)
         return ESP_ERR_INVALID_ARG;
     } 
     s_saved_config = *config;
-    return nvs_config_save_network(config, config->eap_tls_config);
+    return nvs_config_save_network(config, config->eap_tls_config, config->ntp_config);
 }
 
 esp_err_t network_config_apply(const network_config_t *config)
@@ -174,6 +175,11 @@ esp_err_t network_config_apply(const network_config_t *config)
     ESP_RETURN_ON_ERROR(set_dns_if_present(netif, ESP_NETIF_DNS_BACKUP, config->dns2), TAG, "set dns2 failed");
 
     ESP_LOGI(TAG, "Applied static IP config");
+
+    init_ntp(config->ntp_config);
+
+    start_ntp_sync_task();
+    
     return ESP_OK;
 }
 
@@ -199,6 +205,8 @@ esp_err_t network_config_get_runtime(network_config_t *config)
         config->dhcp_enabled = (dhcp_status != ESP_NETIF_DHCP_STOPPED);
     }
 
+    //config->dhcp_enabled = s_saved_config->dhcp_enabled; 
+
     esp_netif_ip_info_t info;
     if (esp_netif_get_ip_info(netif, &info) == ESP_OK) {
         config->ip = info.ip.addr;
@@ -214,8 +222,13 @@ esp_err_t network_config_get_runtime(network_config_t *config)
         config->dns2 = dns.ip.u_addr.ip4.addr;
     }
 
+    
     if (s_saved_config.eap_tls_config) {
         config->eap_tls_config = &s_saved_eap_tls_config;
+    }
+
+    if (s_saved_config.ntp_config) {
+        config->ntp_config = &s_saved_ntp_config;
     }
 
     return ESP_OK;

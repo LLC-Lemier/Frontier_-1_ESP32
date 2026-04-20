@@ -6,6 +6,7 @@ idf_component_register(
         "https_server.c"
         "main.c"
         "network_config.c"
+        "ntp_adapter.c"
         "nvs_config.c"
         "spiffs_driver.c"
         "web_api.c"

@@ -5,6 +5,7 @@
 #include "esp_err.h"
 
 #include "eap_tls_supplicant.h"
+#include "ntp_adapter.h"
 
 typedef struct {
     bool dhcp_enabled;
@@ -14,6 +15,7 @@ typedef struct {
     uint32_t dns1;
     uint32_t dns2;
     eap_tls_config_t* eap_tls_config;
+    ntp_config_t* ntp_config;   
 } network_config_t;
 
 
