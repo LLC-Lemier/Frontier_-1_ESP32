@@ -20,9 +20,46 @@ static char* client_key_pem = NULL;
 
 static esp_err_t load_eap_tls_config_from_spiffs(eap_tls_config_t *config)
 {
-    FILE* f_ca = fopen("/spiffs/certs/ca.pem", "rb");
-    FILE* f_client_cert = fopen("/spiffs/certs/client.crt", "rb");
-    FILE* f_client_key = fopen("/spiffs/certs/client.key", "rb");
+    char ca_cert_path[64], client_cert_path[64], client_key_path[64];
+    snprintf(ca_cert_path, sizeof(ca_cert_path), "/spiffs/certs/ca.pem");
+    snprintf(client_cert_path, sizeof(client_cert_path), "/spiffs/certs/client.crt");
+    snprintf(client_key_path, sizeof(client_key_path), "/spiffs/certs/client.key"); 
+
+    FILE *f_time = fopen("/spiffs/certs/time.txt", "rb");
+    FILE *f_time_new = fopen("/spiffs/certs/time_new.txt", "rb");
+    
+    if (f_time == NULL) {
+        if (f_time_new == NULL) {
+        } else {
+            snprintf(ca_cert_path, sizeof(ca_cert_path), "/spiffs/certs/ca_new.pem");
+            snprintf(client_cert_path, sizeof(client_cert_path), "/spiffs/certs/client_new.crt");
+            snprintf(client_key_path, sizeof(client_key_path), "/spiffs/certs/client_new.key"); 
+
+            fclose(f_time_new);
+        }
+    } else if (f_time_new == NULL) {
+        fclose(f_time);
+    } else {
+        char time_buf[32], time_new_buf[32];
+        fgets(time_buf, sizeof(time_buf), f_time);
+        fgets(time_new_buf, sizeof(time_new_buf), f_time_new);
+
+        time_t time_old = atol(time_buf);
+        time_t time_new = atol(time_new_buf);
+        if (time_new > time_old) {
+            snprintf(ca_cert_path, sizeof(ca_cert_path), "/spiffs/certs/ca_new.pem");
+            snprintf(client_cert_path, sizeof(client_cert_path), "/spiffs/certs/client_new.crt");
+            snprintf(client_key_path, sizeof(client_key_path), "/spiffs/certs/client_new.key"); 
+        }
+
+        fclose(f_time);
+        fclose(f_time_new);
+    }
+
+
+    FILE* f_ca = fopen(ca_cert_path, "rb");
+    FILE* f_client_cert = fopen(client_cert_path, "rb");
+    FILE* f_client_key = fopen(client_key_path, "rb");
 
     if (!f_ca || !f_client_cert || !f_client_key) {
         ESP_LOGW(TAG, "One or more EAP-TLS cert files not found in SPIFFS");

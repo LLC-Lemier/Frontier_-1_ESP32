@@ -65,13 +65,13 @@ esp_err_t nvs_config_load_network(
 
     for (int i = 0; i < 5; i++) {
         char key1[20];
-        snprintf(key1, sizeof(key1), "ntp_server_type%d", i + 1);
+        snprintf(key1, sizeof(key1), "ntp_st%d", i + 1);
         nvs_get_u8(handle, key1, &ntp_config->server_type[i]);
         if (ntp_config->server_type[i] != NTP_SERVER_NONE) {
             ESP_LOGI(TAG, "NTP server %d type: %d", i + 1, ntp_config->server_type[i]);
             size_t required_size = 0;
             char key[20];
-            snprintf(key, sizeof(key), "ntp_server%d", i + 1);
+            snprintf(key, sizeof(key), "ntp_s%d", i + 1);
             ret = nvs_get_str(handle, key, NULL, &required_size);
             if (ret == ESP_OK && required_size > 0) {
                 char *server = malloc(required_size);
@@ -82,6 +82,8 @@ esp_err_t nvs_config_load_network(
             } else {
                 ESP_LOGI(TAG, "NTP server %d not set", i + 1);
             }
+        } else {
+            ntp_config->server[i] = NULL;
         }
     }
     nvs_close(handle);
@@ -118,10 +120,11 @@ esp_err_t nvs_config_save_network(
         for (int i = 0; i < 5; i++) {
             ESP_LOGI(TAG, "Saving NTP server %d type: %d", i + 1, ntp_config->server_type[i]);
             char key[20];
-            snprintf(key, sizeof(key), "ntp_server_type%d", i + 1);
+            snprintf(key, sizeof(key), "ntp_st%d", i + 1);
             ESP_GOTO_ON_ERROR(nvs_set_u8(handle, key, ntp_config->server_type[i]), exit, TAG, "save ntp_server_type failed");
             if (ntp_config->server_type[i] != NTP_SERVER_NONE && ntp_config->server[i]) {
-                snprintf(key, sizeof(key), "ntp_server%d", i + 1);
+                for (int j = 0; j < 20; j++) key[j] = 0; // очистка массива для ключа
+                snprintf(key, sizeof(key), "ntp_s%d", i + 1);
                 ESP_GOTO_ON_ERROR(nvs_set_str(handle, key, ntp_config->server[i]), exit, TAG, "save ntp_server failed");
             }
         }

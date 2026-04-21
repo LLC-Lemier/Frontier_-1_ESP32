@@ -394,10 +394,71 @@ static esp_err_t radius_config_put_handler(httpd_req_t *req)
     if (session) {
         if (s_certs_ctx) {
             if (s_certs_ctx->is_ca_present && s_certs_ctx->is_client_cert_present && s_certs_ctx->is_client_key_present) {
-                FILE *f_ca = fopen("/spiffs/certs/ca_new.pem", "wb");
-                FILE *f_client_cert = fopen("/spiffs/certs/client_new.crt", "wb");
-                FILE *f_client_key = fopen("/spiffs/certs/client_new.key", "wb");
+                char ca_cert_path[64], client_cert_path[64], client_key_path[64];
+                snprintf(ca_cert_path, sizeof(ca_cert_path), "/spiffs/certs/ca.pem");
+                snprintf(client_cert_path, sizeof(client_cert_path), "/spiffs/certs/client.crt");
+                snprintf(client_key_path, sizeof(client_key_path), "/spiffs/certs/client.key"); 
+
+                FILE *f_time = fopen("/spiffs/certs/time.txt", "rb");
+                FILE *f_time_new = fopen("/spiffs/certs/time_new.txt", "rb");
                 
+                if (f_time == NULL) {
+                    if (f_time_new == NULL) {
+                        f_time = fopen("/spiffs/certs/time.txt", "wb");
+                        f_time_new = fopen("/spiffs/certs/time_new.txt", "wb");
+                        
+                        time_t now = time(NULL);
+                        fprintf(f_time, "%ld", now - 3600); // Устанавливаем время в прошлом, чтобы гарантировать его обновление
+                        fprintf(f_time_new, "%ld", now);
+
+                        fclose(f_time);
+                        fclose(f_time_new);
+
+                        snprintf(ca_cert_path, sizeof(ca_cert_path), "/spiffs/certs/ca_new.pem");
+                        snprintf(client_cert_path, sizeof(client_cert_path), "/spiffs/certs/client_new.crt");
+                        snprintf(client_key_path, sizeof(client_key_path), "/spiffs/certs/client_new.key"); 
+                    } else {
+                        f_time = fopen("/spiffs/certs/time.txt", "wb");
+                        if (f_time) {
+                            time_t now = time(NULL);
+                            fprintf(f_time, "%ld", now); 
+                            fclose(f_time);
+                        }
+                        fclose(f_time_new);
+                    }
+                } else if (f_time_new == NULL) {
+                    f_time_new = fopen("/spiffs/certs/time_new.txt", "wb");
+                    if (f_time_new) {
+                        time_t now = time(NULL);
+                        fprintf(f_time_new, "%ld", now); 
+                        fclose(f_time_new);
+                        
+                        snprintf(ca_cert_path, sizeof(ca_cert_path), "/spiffs/certs/ca_new.pem");
+                        snprintf(client_cert_path, sizeof(client_cert_path), "/spiffs/certs/client_new.crt");
+                        snprintf(client_key_path, sizeof(client_key_path), "/spiffs/certs/client_new.key"); 
+                    }
+                    fclose(f_time);
+                } else {
+                    char time_buf[32], time_new_buf[32];
+                    fgets(time_buf, sizeof(time_buf), f_time);
+                    fgets(time_new_buf, sizeof(time_new_buf), f_time_new);
+
+                    time_t time_old = atol(time_buf);
+                    time_t time_new = atol(time_new_buf);
+                    if (time_new < time_old) {
+                        snprintf(ca_cert_path, sizeof(ca_cert_path), "/spiffs/certs/ca_new.pem");
+                        snprintf(client_cert_path, sizeof(client_cert_path), "/spiffs/certs/client_new.crt");
+                        snprintf(client_key_path, sizeof(client_key_path), "/spiffs/certs/client_new.key"); 
+                    }
+
+                    fclose(f_time);
+                    fclose(f_time_new);
+                }
+
+                FILE *f_ca = fopen(ca_cert_path, "wb");
+                FILE *f_client_cert = fopen(client_cert_path, "wb");
+                FILE *f_client_key = fopen(client_key_path, "wb");
+
                 if (f_ca && f_client_cert && f_client_key) {
                     fwrite(s_certs_ctx->ca_cert_pem, 1, s_certs_ctx->ca_cert_len, f_ca);
                     fwrite(s_certs_ctx->client_cert_pem, 1, s_certs_ctx->client_cert_len, f_client_cert);
@@ -669,20 +730,26 @@ static esp_err_t ntp_config_get_handler(httpd_req_t *req)
         
         network_config_t saved = {0};
         network_config_load(&saved);
+        
+        const char** servers = (const char**)malloc(5 * sizeof(char*));
+        for (int i = 0; i < 5; i++) {
+            servers[i] = saved.ntp_config->server[i] ? saved.ntp_config->server[i] : "";
+        }
         snprintf(
             response, 
             sizeof(response), 
             "{\"servers\": [\"%s\", \"%s\", \"%s\", \"%s\", \"%s\"]}", 
-            saved.ntp_config->server[0],
-            saved.ntp_config->server[1],
-            saved.ntp_config->server[2],
-            saved.ntp_config->server[3],
-            saved.ntp_config->server[4]
+            servers[0],
+            servers[1],
+            servers[2],
+            servers[3],
+            servers[4]
         );
         httpd_resp_set_status(req, "200 OK");
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, response);
 
+        free(servers);
         return ESP_OK;
     }
 
@@ -775,6 +842,10 @@ static esp_err_t ntp_config_put_handler(httpd_req_t *req)
         network_config_apply_saved();
 
         cJSON_Delete(root);
+
+        httpd_resp_set_status(req, "202 Accepted");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"ok\":true}");
         
         return ESP_OK;
     }
@@ -1006,8 +1077,8 @@ static void http_server_start()
     }
 */
     httpd_config_t conf = HTTPD_DEFAULT_CONFIG();
-    conf.stack_size = 12288;
-    conf.max_uri_handlers = 16;
+    conf.stack_size = 16384;
+    conf.max_uri_handlers = 24;
     conf.max_open_sockets = 4;
     conf.uri_match_fn = httpd_uri_match_wildcard;
     
@@ -1109,8 +1180,8 @@ static void https_server_task(void *arg)
     conf.port_secure = 443;
     conf.httpd.server_port = 443;
     conf.httpd.uri_match_fn = httpd_uri_match_wildcard;
-    conf.httpd.stack_size = 12288;
-    conf.httpd.max_uri_handlers = 16;
+    conf.httpd.stack_size = 16384;
+    conf.httpd.max_uri_handlers = 24;
     conf.httpd.max_open_sockets = 4;
 
  

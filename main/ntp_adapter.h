@@ -20,3 +20,4 @@ typedef struct
 
 void init_ntp(ntp_config_t *config);
 void start_ntp_sync_task(void);
+bool is_ntp_server_synced();
