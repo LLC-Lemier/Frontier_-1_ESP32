@@ -408,8 +408,8 @@ static esp_err_t radius_config_put_handler(httpd_req_t *req)
                         f_time_new = fopen("/spiffs/certs/time_new.txt", "wb");
                         
                         time_t now = time(NULL);
-                        fprintf(f_time, "%ld", now - 3600); // Устанавливаем время в прошлом, чтобы гарантировать его обновление
-                        fprintf(f_time_new, "%ld", now);
+                        fprintf(f_time, "%lld", now - 3600); // Устанавливаем время в прошлом, чтобы гарантировать его обновление
+                        fprintf(f_time_new, "%lld", now);
 
                         fclose(f_time);
                         fclose(f_time_new);
@@ -421,7 +421,7 @@ static esp_err_t radius_config_put_handler(httpd_req_t *req)
                         f_time = fopen("/spiffs/certs/time.txt", "wb");
                         if (f_time) {
                             time_t now = time(NULL);
-                            fprintf(f_time, "%ld", now); 
+                            fprintf(f_time, "%lld", now); 
                             fclose(f_time);
                         }
                         fclose(f_time_new);
@@ -430,7 +430,7 @@ static esp_err_t radius_config_put_handler(httpd_req_t *req)
                     f_time_new = fopen("/spiffs/certs/time_new.txt", "wb");
                     if (f_time_new) {
                         time_t now = time(NULL);
-                        fprintf(f_time_new, "%ld", now); 
+                        fprintf(f_time_new, "%lld", now); 
                         fclose(f_time_new);
                         
                         snprintf(ca_cert_path, sizeof(ca_cert_path), "/spiffs/certs/ca_new.pem");

@@ -7,7 +7,9 @@
 #include "tcp_server.h"
 #include "https_server.h"
 #include "network_config.h"
+#include "network_manager.h"
 #include "ntp_adapter.h"
+#include "uart_manager.h"
 #include "web_api.h"
 
 static const char *TAG = "MAIN";
@@ -56,10 +58,17 @@ void app_main(void)
     init_ntp(saved_config->ntp_config);
 
     start_ntp_sync_task();
-    
+
     ESP_ERROR_CHECK(web_api_start()); // url handler
-    xTaskCreate(tcp_server_task, "tcp_server", 4096, NULL, 5, NULL);
+    //xTaskCreate(tcp_server_task, "tcp_server", 4096, NULL, 5, NULL);
     ESP_ERROR_CHECK(start_https_server_task()); //
+
+    uart_manager_init();
+    network_manager_init();
+    uart_manager_load_config_from_nvs();
+    network_manager_post_command(&(nm_command_t){
+        .type = NM_CMD_LOAD_CONFIG_FROM_NVS,
+    }, portMAX_DELAY);
 
     // LOG FREEMEMORY
     ESP_LOGI(TAG, "Free heap memory: %d bytes", esp_get_free_heap_size());

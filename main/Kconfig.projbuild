@@ -1,0 +1,178 @@
+menu "Frontier UART manager (XR20M1280)"
+
+    config UART_MGR_F1_UART_NUM
+        int "Frontier_1: номер UART (ESP-IDF uart_port_t)"
+        default 1
+        range 0 2
+        help
+            UART0 часто занят логом; для линии Frontier_1 по умолчанию UART1.
+
+    config UART_MGR_F1_TX_GPIO
+        int "Frontier_1: GPIO TX"
+        default 2
+
+    config UART_MGR_F1_RX_GPIO
+        int "Frontier_1: GPIO RX"
+        default 3
+
+    config UART_MGR_TASK_PRIORITY
+        int "Приоритет задачи uart_mgr (выше сетевых задач, ниже ISR)"
+        default 12
+        range 1 24
+
+    config UART_MGR_TASK_STACK
+        int "Стек задачи uart_mgr (байт)"
+        default 4096
+
+    config UART_MGR_RX_EVENT_WAIT_MS
+        int "uart_mgr: макс. одна блокировка ожидания UART-события (мс)"
+        default 3
+        range 1 50
+        help
+            Задача uart_mgr ждёт события из очереди драйвера UART кусками не дольше этого значения,
+            в пределах окна ~20 мс (heartbeat). Меньше — быстрее реакция на notify от TX при тишине на RX;
+            слишком мало — чаще циклы ожидания.
+
+    config UART_MGR_ENABLE_TEST_TASK
+        bool "Задача эхо (порт 0): RX -> uart_manager -> TX"
+        default n
+        help
+            Читает из uart_manager_receive и пишет в uart_manager_send для проверки кольцевых буферов и линии.
+            Для моста network_manager (TCP/UDP) держите выключенным — иначе конкуриует за RX с network_mgr.
+
+    config UART_MGR_VERBOSE_LOG
+        bool "Подробные ESP_LOGD в задаче uart_mgr (события UART, heartbeat)"
+        default n
+        help
+            Выключает горячий путь в прод-сборке; для отладки потока байт и событий драйвера.
+
+    config UART_MGR_SPI_HOST
+        int "SPI host (2 = SPI2)"
+        default 2
+        range 2 3
+
+    config UART_MGR_SPI_MOSI_GPIO
+        int "SPI MOSI GPIO"
+        default 9
+
+    config UART_MGR_SPI_MISO_GPIO
+        int "SPI MISO GPIO"
+        default 8
+
+    config UART_MGR_SPI_SCLK_GPIO
+        int "SPI SCLK GPIO"
+        default 7
+
+    config UART_MGR_SPI_CS0_GPIO
+        int "SPI CS chip 0 (XR20 #0)"
+        default 10
+
+    config UART_MGR_SPI_CS1_GPIO
+        int "SPI CS chip 1 (XR20 #1)"
+        default 11
+
+    config UART_MGR_SPI_CLOCK_HZ
+        int "SPI clock Hz"
+        default 10000000
+        range 1000000 26000000
+
+    config UART_MGR_GPIO_IF_SEL_A
+        int "GPIO IF_SEL_A (RS232/485 select bit 0)"
+        default 12
+
+    config UART_MGR_GPIO_IF_SEL_B
+        int "GPIO IF_SEL_B (RS232/485 select bit 1)"
+        default 13
+
+    config UART_MGR_GPIO_CS_GROUP1
+        int "GPIO CS1 (demux group)"
+        default 14
+
+    config UART_MGR_GPIO_CS_GROUP2
+        int "GPIO CS2 (demux group)"
+        default 15
+
+    config UART_MGR_GPIO_CS_GROUP3
+        int "GPIO CS3 (demux group)"
+        default 16
+
+    config UART_MGR_GPIO_CS_GROUP4
+        int "GPIO CS4 (demux group)"
+        default 17
+
+    config UART_MGR_XTAL_HZ
+        int "XR20M1280 UART clock Hz (baud divisor)"
+        default 24000000
+        help
+            Частота тактирования БРГ UART на стороне XR20M1280 (см. схему изделия).
+
+endmenu
+
+menu "Frontier application"
+
+    config APP_LAB_SKIP_EAP_GATE
+        bool "Лаб: запускать network_manager без успешного EAP-TLS (по появлению IPv4 на Ethernet)"
+        default n
+        help
+            Для проверки network_manager и API на обычном роутере без 802.1X/RADIUS.
+            Пока нет IP — сервисы не стартуют; после DHCP (ETH_GOT_IP) вызываются те же шаги,
+            что и после успешной EAP-аутентификации (network_config_apply_saved, network_manager_start, HTTPS).
+            Суппликант EAP-TLS по-прежнему можно оставить запущенным — он не блокирует старт в этом режиме.
+            В изделии/прод-сборке оставьте выключенным.
+
+endmenu
+
+menu "Frontier network manager (COM TCP/UDP)"
+
+    config NETWORK_MGR_PHYSICAL_COM_PORTS
+        int "Число физических COM-портов на устройстве"
+        default 1
+        range 1 16
+        help
+            Frontier_1: 1. Полная комплектация по ТЗ: 16. Размер таблиц состояний и NVS net_mgr.
+
+    config NETWORK_MGR_TASK_PRIORITY
+        int "Приоритет задачи network_mgr"
+        default 10
+        range 1 24
+
+    config NETWORK_MGR_TASK_STACK
+        int "Стек задачи network_mgr (байт)"
+        default 8192
+
+    config NETWORK_MGR_CMD_QUEUE_LEN
+        int "Глубина очереди команд"
+        default 8
+        range 2 32
+
+    config NETWORK_MGR_SELECT_TIMEOUT_MS
+        int "Таймаут xQueueReceive / цикл select (мс)"
+        default 50
+        range 10 500
+
+    config NETWORK_MGR_TCP_RECONNECT_MS
+        int "Интервал повтора TCP connect (клиент), мс"
+        default 2000
+        range 500 60000
+
+    config NETWORK_MGR_TEST_TCP_PORT
+        int "Legacy: порт (если не используете test_scenarios.h)"
+        default 8088
+        range 1024 65535
+        help
+            При включённой тестовой задаче порт и сценарий задаются в main/network_manager_test_scenarios.h
+            (NM_TEST_LOCAL_PORT и ровно один NM_TEST_SCENARIO_*). Эта опция оставлена для совместимости и не используется кодом nm_test.
+
+    config NETWORK_MGR_ENABLE_TEST_TASK
+        bool "Тестовая задача nm_test (сценарии через network_manager_test_scenarios.h)"
+        default n
+        help
+            Создаёт задачу nm_test: после задержки шлёт в очередь network_manager команды по выбранному сценарию
+            (TCP server, до 5 клиентов вручную, TCP client, UDP, TCP затем STOP). Ровно один макрос
+            NM_TEST_SCENARIO_* должен быть определён в network_manager_test_scenarios.h. IP/порта ПК — в том же файле.
+
+    config NETWORK_MGR_VERBOSE_LOG
+        bool "Подробные логи network_mgr (отладка)"
+        default n
+
+endmenu

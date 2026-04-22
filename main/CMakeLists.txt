@@ -6,16 +6,20 @@ idf_component_register(
         "https_server.c"
         "main.c"
         "network_config.c"
+        "network_manager.c"
         "ntp_adapter.c"
         "nvs_config.c"
         "spiffs_driver.c"
+        "uart_manager.c"
         "web_api.c"
+        "xr20m1280.c"
     INCLUDE_DIRS "."
     REQUIRES
         esp_http_server
         esp_https_server
         esp_timer
         esp_driver_gpio
+        esp_driver_uart
         esp_netif
         esp_eth
         nvs_flash
