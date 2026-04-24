@@ -17,7 +17,10 @@
 #include <lwip/sockets.h>
 #include "authentication.h"
 #include "network_config.h"
+#include "network_manager.h"
+#include "re.h"
 #include "spiffs_driver.h"
+#include "uart_manager.h"
 
 static const char *TAG = "HTTPS";
 static httpd_handle_t s_server;
@@ -44,6 +47,9 @@ typedef struct {
 
 static certs_loader_ctx_t* s_certs_ctx;
 static eap_tls_config_t* s_eap_tls_config; 
+
+static re_t s_port_regex = re_compile(":([0-9]+)$");
+static re_t s_ip_port_regex = re_compile("([0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+:[0-9]+)$");
 //extern const char server_cert_pem_start[] asm("_binary_server_crt_start");  // эмуляция файлов
 //extern const char server_cert_pem_end[]   asm("_binary_server_crt_end");
 //extern const char server_key_pem_start[]  asm("_binary_server_key_start");
@@ -577,7 +583,8 @@ static esp_err_t radius_config_ca_put_handler(httpd_req_t *req)
 
             int ret, remaining = req->content_len;
 
-            if (remaining <= 0 || remaining >= (int)sizeof(s_certs_ctx->ca_cert_pem)) {
+            if (
+                remaining <= 0 || remaining >= (int)sizeof(s_certs_ctx->ca_cert_pem)) {
                 httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Body too large or empty");
                 return ESP_ERR_INVALID_SIZE;
             }
@@ -856,13 +863,275 @@ static esp_err_t ntp_config_put_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+static esp_err_t port_config_get_handler(httpd_req_t *req)
+{
+    add_cors_headers(req); // Добавляем CORS заголовки к ответу
+    session_t *session = auth_middleware(req);
+
+    esp_err_t ret = ESP_OK;
+
+    if (session) {
+        char response[384];
+        char address_port[32];
+        uart_manager_port_config_t saved = {0};
+        nm_port_net_config_t net_cfg_saved = {0};
+
+        ret = uart_manager_get_port_config(UART_MGR_F1_PORT_ID, &saved);
+        if (ret != ESP_OK) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to get UART port config");
+            return ESP_FAIL;
+        }
+
+        ret = network_manager_get_port_config(UART_MGR_F1_PORT_ID, &net_cfg_saved);
+        if (ret != ESP_OK) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to get network port config");
+            return ESP_FAIL;
+        }
+
+        if(net_cfg_saved.mode == NM_MODE_OFF) {
+            snprintf(address_port, sizeof(address_port), "%s", "");
+        } else if (net_cfg_saved.mode == NM_MODE_TCP_SERVER || net_cfg_saved.mode == NM_MODE_UDP) {
+            snprintf(address_port, sizeof(address_port), ":%d", net_cfg_saved.local_tcp_udp_port);
+        } else if (net_cfg_saved.mode == NM_MODE_TCP_CLIENT) {
+            snprintf(address_port, sizeof(address_port), "%s:%d", net_cfg_saved.remote_ip, net_cfg_saved.remote_port);
+        } else {
+            snprintf(address_port, sizeof(address_port), "unknown");
+        }
+
+        snprintf(
+            response, 
+            sizeof(response), 
+            "{\"ports\": [{\"id\": %d,\"baud_rate\": %ld,\"data_bits\": %d,\"stop_bits\": %d,\"parity\": %d,\"line_mode\": %d, \"net_mode\": %d, \"net_address_port\": \"%s\"}]}",
+            UART_MGR_F1_PORT_ID,
+            saved.baud,
+            saved.data_bits,
+            saved.stop_bits,
+            saved.parity,
+            saved.line_mode,
+            net_cfg_saved.mode,
+            address_port
+        );
+        httpd_resp_set_status(req, "200 OK");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, response);
+
+        return ESP_OK;
+    }
+
+    httpd_resp_set_status(req, "401 Unauthorized");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"error\":\"Invalid credentials\"}");
+    return ESP_OK;
+}
+
+static esp_err_t port_config_put_handler(httpd_req_t *req)
+{
+    add_cors_headers(req); // Добавляем CORS заголовки к ответу
+    session_t *session = auth_middleware(req);
+
+    if (session) {
+        // Парсим JSON из тела запроса
+        char body[384];
+        int ret, remaining = req->content_len;
+
+        if (remaining <= 0 || remaining >= (int)sizeof(body)) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Body too large or empty");
+            return ESP_ERR_INVALID_SIZE;
+        }
+
+        int whole_body_received = 0;
+
+        while (remaining > 0) {
+            /* Read the data for the request */
+            ret = httpd_req_recv(req, body, MIN(remaining, sizeof(body)));
+            if (ret <= 0) {
+                if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+                    /* Retry if timeout occurred */
+                    continue;
+                }
+                return ESP_FAIL;
+            }
+            remaining -= ret;
+            whole_body_received += ret;
+        }
+
+        if (whole_body_received == 0) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty body");
+            return ESP_ERR_INVALID_SIZE;
+        }
+
+        cJSON *root = cJSON_Parse(body);    
+        const cJSON *ports = cJSON_GetObjectItem(root, "ports");
+        cJSON *port = cJSON_GetArrayItem(ports, i);
+ 
+        if (!ports || !cJSON_IsArray(ports) || cJSON_GetArraySize(ports) != 1) {
+            cJSON_Delete(root);
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing or invalid 'ports' array (must contain exactly 1 item)");
+            return ESP_ERR_INVALID_ARG;
+        }
+
+        if (!cJSON_IsObject(port)) {
+            cJSON_Delete(root);
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Each item in 'ports' array must be an object");
+            return ESP_ERR_INVALID_ARG;
+        }
+
+        uart_manager_port_config_t saved = {0};
+        uart_manager_port_config_t new = {0};
+        nm_port_net_config_t net_cfg_saved = {0};
+        nm_port_net_config_t net_cfg_new = {0};
+
+        ret = uart_manager_get_port_config(UART_MGR_F1_PORT_ID, &saved);
+        if (ret != ESP_OK) {
+            cJSON_Delete(root);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to get UART port config");
+            return ESP_FAIL;
+        }
+
+        ret = network_manager_get_port_config(UART_MGR_F1_PORT_ID, &net_cfg_saved);
+        if (ret != ESP_OK) {
+            cJSON_Delete(root);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to get network port config");
+            return ESP_FAIL;
+        }
+
+        if (cJSON_GetObjectItem(port, "baud_rate")) {
+            if (!cJSON_IsNumber(cJSON_GetObjectItem(port, "baud_rate"))) {
+                cJSON_Delete(root);
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "'baud_rate' must be a number");
+                return ESP_ERR_INVALID_ARG;
+            }
+            int baud_rate = cJSON_GetObjectItem(port, "baud_rate")->valueint;
+            if (uart_manager_validate_baud_rate(baud_rate) != ESP_OK) {
+                cJSON_Delete(root);
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid 'baud_rate' value");
+                return ESP_ERR_INVALID_ARG;
+            }
+            new.baud = baud_rate;
+        }
+
+        if (cJSON_GetObjectItem(port, "data_bits")) {
+            if (!cJSON_IsNumber(cJSON_GetObjectItem(port, "data_bits"))) {
+                cJSON_Delete(root);
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "'data_bits' must be a number");
+                return ESP_ERR_INVALID_ARG;
+            }
+            int data_bits = cJSON_GetObjectItem(port, "data_bits")->valueint;
+            if (uart_manager_validate_data_bits(data_bits) != ESP_OK) {
+                cJSON_Delete(root);
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid 'data_bits' value");
+                return ESP_ERR_INVALID_ARG;
+            }
+            new.data_bits = data_bits;
+        }
+
+        if (cJSON_GetObjectItem(port, "stop_bits")) {
+            if (!cJSON_IsNumber(cJSON_GetObjectItem(port, "stop_bits"))) {
+                cJSON_Delete(root);
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "'stop_bits' must be a number");
+                return ESP_ERR_INVALID_ARG;
+            }
+            int stop_bits = cJSON_GetObjectItem(port, "stop_bits")->valueint;
+            if (uart_manager_validate_stop_bits(stop_bits) != ESP_OK) {
+                cJSON_Delete(root);
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid 'stop_bits' value");
+                return ESP_ERR_INVALID_ARG;
+            }
+            new.stop_bits = stop_bits;
+        }
+
+        if (cJSON_GetObjectItem(port, "parity")) {
+            if (!cJSON_IsNumber(cJSON_GetObjectItem(port, "parity"))) {
+                cJSON_Delete(root);
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "'parity' must be a number");
+                return ESP_ERR_INVALID_ARG;
+            }
+            int parity = cJSON_GetObjectItem(port, "parity")->valueint;
+            if (uart_manager_validate_parity(parity) != ESP_OK) {
+                cJSON_Delete(root);
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid 'parity' value");
+                return ESP_ERR_INVALID_ARG;
+            }
+            new.parity = parity;
+        }
+
+        if (cJSON_GetObjectItem(port, "line_mode")) {
+            if (!cJSON_IsNumber(cJSON_GetObjectItem(port, "line_mode"))) {
+                cJSON_Delete(root);
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "'line_mode' must be a number");
+                return ESP_ERR_INVALID_ARG;
+            }
+            int line_mode = cJSON_GetObjectItem(port, "line_mode")->valueint;
+            if (uart_manager_validate_line_mode(line_mode) != ESP_OK) {
+                cJSON_Delete(root);
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid 'line_mode' value");
+                return ESP_ERR_INVALID_ARG;
+            }
+        }
+
+        if (cJSON_GetObjectItem(port, "net_mode")) {
+            if (!cJSON_IsNumber(cJSON_GetObjectItem(port, "net_mode"))) {
+                cJSON_Delete(root);
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "'net_mode' must be a number");
+                return ESP_ERR_INVALID_ARG;
+            }
+            int net_mode = cJSON_GetObjectItem(port, "net_mode")->valueint;
+            if (net_mode == NM_MODE_OFF) {
+
+            } else if (net_mode == NM_MODE_TCP_SERVER || net_mode == NM_MODE_UDP) {
+                // check :/d{5}
+
+
+            } else if (net_mode == NM_MODE_TCP_CLIENT) {
+                if (!cJSON_GetObjectItem(port, "remote_ip") || !cJSON_IsString(cJSON_GetObjectItem(port, "remote_ip"))) {
+                    cJSON_Delete(root);
+                    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "'remote_ip' must be provided and must be a string when 'net_mode' is TCP_CLIENT");
+                    return ESP_ERR_INVALID_ARG;
+                }
+                if (!cJSON_GetObjectItem(port, "remote_port") || !cJSON_IsNumber(cJSON_GetObjectItem(port, "remote_port"))) {
+                    cJSON_Delete(root);
+                    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "'remote_port' must be provided and must be a number when 'net_mode' is TCP_CLIENT");
+                    return ESP_ERR_INVALID_ARG;
+                }
+                const char* remote_ip = cJSON_GetObjectItem(port, "remote_ip")->valuestring;
+                int remote_port = cJSON_GetObjectItem(port, "remote_port")->valueint;
+                ip_addr_t temp;
+                if (!ipaddr_aton(remote_ip, &temp)) {
+                    cJSON_Delete(root);
+                    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "'remote_ip' must be a valid IP address");
+                    return ESP_ERR_INVALID_ARG;
+                }
+                if (remote_port < 1 || remote_port > 65535) {
+                    cJSON_Delete(root);
+                    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "'remote_port' must be between 1 and 65535");
+                    return ESP_ERR_INVALID_ARG;
+                }
+            }
+        }
+                
+        net_cfg_new.mode = cJSON_GetObjectItem(port, "net_mode") ? cJSON_GetObjectItem(port, "net_mode")->valueint : net_cfg_saved.mode;
+        
+        
+        
+
+        httpd_resp_set_status(req, "202 Accepted");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"ok\":true}");
+        
+        return ESP_OK;
+    }
+
+    httpd_resp_set_status(req, "401 Unauthorized");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"error\":\"Invalid credentials\"}");
+    return ESP_OK;
+}
+
 static esp_err_t reboot_post_handler(httpd_req_t *req)
 {
     web_api_request_t request = {.type = WEB_API_CMD_REBOOT, .request_id = (uint32_t)esp_timer_get_time()};
     return do_api_call(req, &request);
 }
-
-
 
 
 // Обработчик логина
@@ -1016,6 +1285,17 @@ static void register_uri_handlers(httpd_handle_t server) // handler
         .method = HTTP_PUT,
         .handler = ntp_config_put_handler,
     };
+    const httpd_uri_t port_config_uri_get = {
+        .uri = "/api/ports/",
+        .method = HTTP_GET,
+        .handler = port_config_get_handler,
+    };
+
+    const httpd_uri_t port_config_uri_put = {
+        .uri = "/api/ports/",
+        .method = HTTP_PUT,
+        .handler = port_config_put_handler,
+    };
 
     /*const httpd_uri_t dhcp_uri = {
         .uri = "/api/network/dhcp",
@@ -1057,6 +1337,8 @@ static void register_uri_handlers(httpd_handle_t server) // handler
     httpd_register_uri_handler(server, &ntp_cfg_uri_get);
     httpd_register_uri_handler(server, &ntp_cfg_uri_put);
 
+    httpd_register_uri_handler(server, &port_config_uri_get);
+    httpd_register_uri_handler(server, &port_config_uri_put);
     /*httpd_register_uri_handler(server, &dhcp_uri);
     httpd_register_uri_handler(server, &static_uri);
     httpd_register_uri_handler(server, &reboot_uri);*/

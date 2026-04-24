@@ -33,7 +33,15 @@ typedef uint8_t uart_port_id_t;
 #define UART_MGR_NUM_PORTS 16
 /** Единственный поддерживаемый на Frontier_1 логический порт. */
 #define UART_MGR_F1_PORT_ID ((uart_port_id_t)0)
-#define UART_MGR_DEFAULT_BAUD 115200u
+
+#define UART_MGR_BAUD_2400 2400u
+#define UART_MGR_BAUD_4800 4800u
+#define UART_MGR_BAUD_9600 9600u
+#define UART_MGR_BAUD_19200 19200u
+#define UART_MGR_BAUD_38400 38400u
+#define UART_MGR_BAUD_57600 57600u
+#define UART_MGR_BAUD_115200 115200u
+#define UART_MGR_DEFAULT_BAUD UART_MGR_BAUD_115200
 
 /** Frontier_1: размер выделяемого при старте пула под каждое кольцо RX/TX (логическая глубина ≤ этого значения). */
 #define UART_MGR_F1_RING_POOL_BYTES (64u * 1024u)
@@ -221,6 +229,18 @@ esp_err_t uart_manager_save_config_to_nvs(void);
  * Поддерживаются запись v1 (28 B полезной нагрузки без CRC) и v2 (32 B: полезная нагрузка + CRC32 по 28 байтам).
  */
 esp_err_t uart_manager_load_config_from_nvs(void);
+
+/**
+* Проверить валидность baud rate. На Frontier_1 поддерживаются только 2400, 4800, 9600, 19200, 38400, 57600, 115200.
+*/
+esp_err_t uart_manager_validate_baud(uint32_t baud);
+
+/**
+ * Проверить валидность бит данных. На Frontier_1 поддерживается 5, 6, 7, 8 бит данных.
+ */
+esp_err_t uart_manager_validate_data_bits(uint8_t data_bits);
+
+
 
 #if defined(CONFIG_UART_MGR_ENABLE_TEST_TASK) && CONFIG_UART_MGR_ENABLE_TEST_TASK
 /**

@@ -80,6 +80,7 @@ esp_err_t network_manager_start(void);
 bool network_manager_post_command(const nm_command_t *cmd, TickType_t ticks_to_wait);
 
 esp_err_t network_manager_get_stats(uart_port_id_t port_id, nm_port_stats_t *out_stats);
+esp_err_t network_manager_get_port_config(uart_port_id_t port_id, nm_port_net_config_t *out_cfg);
 
 
 

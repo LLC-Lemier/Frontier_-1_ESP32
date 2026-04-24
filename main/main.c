@@ -14,12 +14,6 @@
 
 static const char *TAG = "MAIN";
 
-extern const char ca_cert_pem_start[] asm("_binary_ca_pem_start");
-extern const char ca_cert_pem_end[] asm("_binary_ca_pem_end");
-extern const char client_cert_pem_start[] asm("_binary_client_crt_start");
-extern const char client_cert_pem_end[] asm("_binary_client_crt_end");
-extern const char client_key_pem_start[] asm("_binary_client_key_start");
-extern const char client_key_pem_end[] asm("_binary_client_key_end");
 
 void app_main(void)
 {

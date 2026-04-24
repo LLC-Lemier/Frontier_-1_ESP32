@@ -1083,7 +1083,17 @@ esp_err_t network_manager_get_stats(uart_port_id_t port_id, nm_port_stats_t *out
         return ESP_ERR_TIMEOUT;
     }
     *out_stats = s_stats[port_id];
-    xSemaphoreGive(s_stats_mtx);
+    xSemaphoreGive
+    (s_stats_mtx);
+    return ESP_OK;
+}
+
+esp_err_t network_manager_get_port_config(uart_port_id_t port_id, nm_port_net_config_t *out_cfg)
+{
+    if (out_cfg == NULL || !nm_port_id_valid(port_id) || !s_inited) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    memcpy(out_cfg, &s_ports[port_id].cfg, sizeof(nm_port_net_config_t));
     return ESP_OK;
 }
 

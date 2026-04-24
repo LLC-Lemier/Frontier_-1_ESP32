@@ -1084,6 +1084,51 @@ esp_err_t uart_manager_reset_stats(uart_port_id_t port)
     return ESP_OK;
 }
 
+esp_err_t uart_manager_validate_baud(uint32_t baud)
+{
+    if (baud == UART_MGR_BAUD_2400) return ESP_OK;
+    if (baud == UART_MGR_BAUD_4800) return ESP_OK;
+    if (baud == UART_MGR_BAUD_9600) return ESP_OK;
+    if (baud == UART_MGR_BAUD_19200) return ESP_OK;
+    if (baud == UART_MGR_BAUD_38400) return ESP_OK;
+    if (baud == UART_MGR_BAUD_57600) return ESP_OK;
+    if (baud == UART_MGR_BAUD_115200) return ESP_OK;
+    return ESP_ERR_INVALID_ARG;
+}
+
+esp_err_t uart_manager_validate_data_bits(uint8_t data_bits)
+{
+    if (data_bits >= 5 && data_bits <= 8) {
+        return ESP_OK;
+    }
+    return ESP_ERR_INVALID_ARG;
+}
+
+esp_err_t uart_manager_validate_stop_bits(uint8_t stop_bits)
+{
+    if (stop_bits == 1 || stop_bits == 2 || stop_bits == 3) {
+        return ESP_OK;
+    }
+    return ESP_ERR_INVALID_ARG;
+}
+
+esp_err_t uart_manager_validate_parity(uint8_t parity)
+{
+    if (parity <= (uint8_t)UART_MGR_PARITY_EVEN) {
+        return ESP_OK;
+    }
+    return ESP_ERR_INVALID_ARG;
+}
+
+esp_err_t uart_manager_validate_line_mode(uint8_t line_mode)
+{
+    if (line_mode <= (uint8_t)UART_MGR_LINE_RS422) {
+        return ESP_OK;
+    }
+    return ESP_ERR_INVALID_ARG;
+}
+
+
 #if defined(CONFIG_UART_MGR_ENABLE_TEST_TASK) && CONFIG_UART_MGR_ENABLE_TEST_TASK
 void uart_mgr_consumer_test_task(void *arg)
 {
